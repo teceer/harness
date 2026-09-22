@@ -2,7 +2,7 @@
 //
 // Terminal programs never see ⌘ chords, and iTerm2 uses ⌘[ / ⌘] for its own
 // pane switching. A dynamic profile "Harness" (inheriting everything from
-// the user's profile) maps ⌘[ ⌘] ⌥⇥ ⌘⇧A ⌥1…⌥9 to private escape sequences that the
+// the user's profile) maps ⌘[ ⌘] ⌥⇥ ⌘⇧A ⌘⇧N ⌥1…⌥9 to private escape sequences that the
 // harness tmux binds. `harness ui` switches its tab to that profile while
 // attached, so iTerm2 behaves as usual everywhere else.
 package iterm
@@ -25,6 +25,7 @@ var keyMap = func() map[string]map[string]any {
 		"0x5d-0x100000-0x1e": {"Action": 10, "Text": "[1001~"}, // ⌘]  → harness switch next
 		"0x9-0x80000-0x30":   {"Action": 10, "Text": "[1002~"}, // ⌥⇥  → sidebar ⇄ session
 		"0x41-0x120000-0x0":  {"Action": 10, "Text": "[1003~"}, // ⌘⇧A → Sessions ⇄ Archived (0x120000 = ⌘⇧)
+		"0x4e-0x120000-0x2d": {"Action": 10, "Text": "[1004~"}, // ⌘⇧N → new session
 	}
 	// ⌥1…⌥9 → harness switch n (macOS virtual key codes of the digit row).
 	// Not ⌘: iTerm2 takes ⌘1…⌘9 for its tabs before it looks at profile

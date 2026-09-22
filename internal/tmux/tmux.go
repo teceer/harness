@@ -248,7 +248,7 @@ func EnsureSidebar(session, command, exe, build string) (string, error) {
 	return pane, bindKeys(pane, exe)
 }
 
-// Key sequences the harness iTerm2 profile sends for ⌘[ ⌘] ⌥⇥ ⌘⇧A and ⌥1…⌥9.
+// Key sequences the harness iTerm2 profile sends for ⌘[ ⌘] ⌥⇥ ⌘⇧A ⌘⇧N and ⌥1…⌥9.
 // Cmd chords never reach a terminal program on their own; these private CSI
 // sequences are what iTerm2 is told to send instead (see internal/iterm).
 const (
@@ -256,6 +256,7 @@ const (
 	SeqNext     = "\x1b[1001~"
 	SeqToggle   = "\x1b[1002~"
 	SeqArchived = "\x1b[1003~"
+	SeqNew      = "\x1b[1004~"
 )
 
 // Keys the sidebar receives for ⌘⇧A: pressed in the sidebar it toggles
@@ -263,6 +264,8 @@ const (
 const (
 	TabToggleKey   = "F12"
 	TabArchivedKey = "F11"
+	// NewSessionKey opens the sidebar's new-session prompt (⌘⇧N).
+	NewSessionKey = "F10"
 )
 
 // SeqNumber is the sequence for ⌥n, n in 1…9.
@@ -270,7 +273,7 @@ func SeqNumber(n int) string { return fmt.Sprintf("\x1b[10%d~", 10+n) }
 
 // bindKeys: ⌥⇥ toggles between the sidebar and the session next to it,
 // ⌘[ / ⌘] show the previous / next harness session, ⌥n the n-th one,
-// ⌘⇧A toggles Sessions ⇄ Archived.
+// ⌘⇧A toggles Sessions ⇄ Archived, ⌘⇧N starts a new session.
 func bindKeys(sidebar, exe string) error {
 	seqs := []string{SeqPrev, SeqNext, SeqToggle}
 	back := fmt.Sprintf("select-window -t %s ; select-pane -t %s", sidebar, sidebar)
@@ -283,6 +286,11 @@ func bindKeys(sidebar, exe string) error {
 		seqs = append(seqs, SeqNumber(n))
 		binds = append(binds, []string{fmt.Sprintf("User%d", len(seqs)-1), "run-shell", "-b", fmt.Sprintf("%s switch %d", Quote(exe), n)})
 	}
+	// ⌘⇧N: focus the sidebar and open its new-session prompt.
+	seqs = append(seqs, SeqNew)
+	binds = append(binds, []string{fmt.Sprintf("User%d", len(seqs)-1),
+		"select-window", "-t", sidebar, `\;`, "select-pane", "-t", sidebar, `\;`, "send-keys", "-t", sidebar, NewSessionKey})
+
 	// ⌘⇧A: in the sidebar toggle its tabs; from a session focus the
 	// sidebar on Archived.
 	seqs = append(seqs, SeqArchived)

@@ -507,7 +507,7 @@ func (m *sidebar) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			err := st.Tx(func(tx *store.Tx) error { return tx.Delete(s.ID) })
 			return opMsg{text: "removed from list (transcript kept)", err: err}
 		}
-	case "n":
+	case strings.ToLower(tmux.NewSessionKey): // F10 comes from ⌘⇧N
 		dir := config.Expand("~")
 		if s, ok := m.selected(); ok && s.Cwd != "" {
 			dir = s.Cwd
@@ -1036,7 +1036,7 @@ func (m *sidebar) body() ([]string, []string) {
 		if m.tab == tabArchived {
 			add(stSub.Render(" nothing archived"), "")
 		} else {
-			add(stSub.Render(" no sessions — press ")+stKey.Render("n"), "")
+			add(stSub.Render(" no sessions — press ")+stKey.Render("⌘⇧N"), "")
 		}
 	}
 	return lines, owners
@@ -1156,7 +1156,7 @@ func (m *sidebar) footer(w int) string {
 		}
 		status = st.Render(" " + ansi.Truncate(m.msg, w-2, "…"))
 	}
-	help := keys("⏎", "open", "␣", "peek", "n", "new", "a", "archive")
+	help := keys("⏎", "open", "␣", "peek", "⌘⇧N", "new", "a", "archive")
 	help2 := keys("1-9", "jump", "←→", "tabs", "e", "name", "q", "detach")
 	if m.tab == tabArchived {
 		help = keys("⏎", "resume", "␣", "hold: peek", "x", "forget", ".", "ended")

@@ -65,7 +65,7 @@ resumable sessions (archived, and ones that ended in the last day).
 | `Tab` | move into the session shown on the right |
 | `1` … `9` | in the sidebar: same as `⌥1` … `⌥9` |
 | `←` `→` | switch tabs (or click them) |
-| `n` | new session: directory prompt with `Tab` completion (`Tab`/`↓` next, `⇧Tab`/`↑` previous; relative paths start at `~`); profile from the path |
+| `⌘⇧N` | anywhere: new session — directory prompt in the sidebar with `Tab` completion (`Tab`/`↓` next, `⇧Tab`/`↑` previous; relative paths start at `~`); profile from the path |
 | `a` | archive (`a` twice / `A` when it is working) |
 | `e` | rename · `x` forget a stopped session · `.` all ended ones |
 | `q` | detach (everything keeps running) · `ctrl+c` quit the sidebar |
