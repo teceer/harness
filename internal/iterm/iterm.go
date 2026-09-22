@@ -8,11 +8,15 @@
 package iterm
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const ProfileName = "Harness"
@@ -53,29 +57,96 @@ func profilePath() (string, error) {
 }
 
 // EnsureProfile writes the dynamic profile (iTerm2 picks it up live) with
-// parent as the profile it inherits colours, fonts and keys from.
-func EnsureProfile(parent string) error {
+// parent as the profile it inherits colours, fonts and keys from. changed
+// reports that the file was (re)written: iTerm2 loads it asynchronously, so
+// the profile may not be selectable for a moment.
+func EnsureProfile(parent string) (changed bool, err error) {
 	path, err := profilePath()
 	if err != nil {
-		return err
+		return false, err
 	}
 	doc := map[string]any{"Profiles": []map[string]any{{
 		"Name":                        ProfileName,
 		"Guid":                        "harness-dynamic-profile",
 		"Dynamic Profile Parent Name": parent,
-		"Keyboard Map":                keyMap,
+		"Keyboard Map":                mergedKeyMap(parentKeyMap(prefs(), parent)),
 	}}}
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
-		return err
+		return false, err
 	}
 	if cur, err := os.ReadFile(path); err == nil && string(cur) == string(data) {
-		return nil
+		return false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return false, err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return true, os.WriteFile(path, data, 0o644)
+}
+
+// mergedKeyMap puts the harness keys over the parent's own mappings. A
+// dynamic profile inherits its parent key by key, and "Keyboard Map" is one
+// key: without the parent's entries the Harness tab would lose e.g. the
+// Natural Text Editing preset (⌥← ⌥→ by word, ⌘← line start).
+func mergedKeyMap(parent map[string]any) map[string]any {
+	m := make(map[string]any, len(parent)+len(keyMap))
+	maps.Copy(m, parent)
+	for k, v := range keyMap {
+		m[k] = v
+	}
+	return m
+}
+
+// prefs is iTerm2's preferences as an XML plist. `defaults export` goes
+// through cfprefsd, so it sees settings iTerm2 has not flushed to disk yet.
+func prefs() []byte {
+	out, _ := exec.Command("defaults", "export", "com.googlecode.iterm2", "-").Output()
+	return out
+}
+
+// parentKeyMap is the Keyboard Map of the profile named name in the iTerm2
+// preferences plist, or of the default profile when there is none by that
+// name (iTerm2 falls back to it for an unknown parent too). nil if neither
+// is found.
+func parentKeyMap(plist []byte, name string) map[string]any {
+	if len(plist) == 0 {
+		return nil
+	}
+	defGuid := plistValue(plist, "Default Bookmark Guid", "raw")
+	fallback := -1
+	for i := 0; ; i++ {
+		guid := plistValue(plist, fmt.Sprintf("New Bookmarks.%d.Guid", i), "raw")
+		if guid == "" {
+			break
+		}
+		if plistValue(plist, fmt.Sprintf("New Bookmarks.%d.Name", i), "raw") == name {
+			return keyMapAt(plist, i)
+		}
+		if guid == defGuid {
+			fallback = i
+		}
+	}
+	if fallback < 0 {
+		return nil
+	}
+	return keyMapAt(plist, fallback)
+}
+
+func keyMapAt(plist []byte, i int) map[string]any {
+	var m map[string]any
+	json.Unmarshal([]byte(plistValue(plist, fmt.Sprintf("New Bookmarks.%d.Keyboard Map", i), "json")), &m)
+	return m
+}
+
+// plistValue extracts keypath from plist with plutil; "" if absent.
+func plistValue(plist []byte, keypath, format string) string {
+	cmd := exec.Command("plutil", "-extract", keypath, format, "-o", "-", "-")
+	cmd.Stdin = bytes.NewReader(plist)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // SetProfile switches the current iTerm2 session to the named profile.

@@ -76,9 +76,10 @@ Terminal programs never receive ⌘ chords, and iTerm2 uses `⌘[` `⌘]` for it
 own pane switching. `harness` therefore writes an iTerm2 dynamic profile
 (`~/Library/Application Support/iTerm2/DynamicProfiles/harness.json`)
 named *Harness*: it inherits everything from the profile you started in
-and maps `⌘[` `⌘]` `⌥⇥` `⌘⇧A` `⌥1`…`⌥9` to private escape sequences the harness tmux binds
-(`user-keys`). The tab switches to that profile while attached and back
-when you detach, so every other iTerm2 tab behaves as before.
+(its key mappings included) and on top maps `⌘[` `⌘]` `⌥⇥` `⌘⇧A` `⌘⇧N`
+`⌥1`…`⌥9` to private escape sequences the harness tmux binds (`user-keys`).
+The tab switches to that profile while attached and back when you detach,
+so every other iTerm2 tab behaves as before.
 
 Session numbers use ⌥, not ⌘: iTerm2 handles ⌘1…⌘9 (*Settings → Keys →
 Navigation Shortcuts → select a tab*) before it consults profile key

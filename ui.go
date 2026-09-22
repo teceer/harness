@@ -49,9 +49,15 @@ func cmdUI(args []string) error {
 	}
 	// ⌘[ ⌘] ⌥⇥ only exist in the Harness profile: wear it while attached.
 	orig := iterm.CurrentProfile()
-	if err := iterm.EnsureProfile(orig); err != nil {
+	changed, err := iterm.EnsureProfile(orig)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "harness: iTerm2 profile:", err)
 		return tmux.Attach(pane)
+	}
+	if changed {
+		// iTerm2 notices the new file on its own schedule; switching before
+		// that silently does nothing and leaves the tab without shortcuts.
+		time.Sleep(time.Second)
 	}
 	iterm.SetProfile(os.Stdout, iterm.ProfileName)
 	defer iterm.SetProfile(os.Stdout, orig)
