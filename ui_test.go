@@ -149,3 +149,19 @@ func TestLeavingSidebarSelectsShownSession(t *testing.T) {
 		t.Fatalf("after blur: tab=%d sel=%s, want Sessions/b", m.tab, m.selID)
 	}
 }
+
+func TestPeekKeepsSelection(t *testing.T) {
+	now := time.Now()
+	m := newSidebar(&config.Config{SidebarWidth: 42}, nil, "%0")
+	m.Update(dataMsg{shown: "%2", sessions: []store.Session{
+		{ID: "a", Profile: "p", Status: store.Idle, TmuxPane: "%1", CreatedAt: now, UpdatedAt: now},
+		{ID: "b", Profile: "p", Status: store.Idle, TmuxPane: "%2", CreatedAt: now.Add(time.Second), UpdatedAt: now},
+	}})
+	m.moveTo(0)      // selected "a", "b" is shown on the right
+	m.peeking = true // what peek() sets before the popup opens
+	m.Update(tea.BlurMsg{})
+	m.Update(peekDoneMsg{})
+	if m.selID != "a" {
+		t.Fatalf("peek moved the selection to %s", m.selID)
+	}
+}

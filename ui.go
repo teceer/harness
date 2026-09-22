@@ -392,7 +392,11 @@ func (m *sidebar) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.BlurMsg:
-		m.selectShown()
+		// The peek popup takes the keyboard too; that is not going into the
+		// session, and the selection must stay on what is being peeked at.
+		if !m.peeking {
+			m.selectShown()
+		}
 		return m, nil
 	case askMoveMsg:
 		m.confirmMove = msg.id
