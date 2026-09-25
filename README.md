@@ -129,8 +129,17 @@ harness serve          # prints the URL, token included
 ```
 
 A small web app — the same session list (grouped by profile, with a filter
-per profile), the recent conversation of any session on its own page, a
-reply box, archive / resume and starting a session in a known directory. It is meant for a phone: answer a permission prompt from the
+per profile), each session on its own page, a reply box, archive / resume
+and starting a session in a known directory.
+
+Each session page has two views. **conversation** streams the transcript:
+Claude Code appends per block (a paragraph, a tool call), so answers show
+up about a second after they are written, images pasted into the session
+included. **live** mirrors the tmux pane a few times a second, colours and
+all — the spinner and tool output as they happen, which is as close to
+token-by-token as a transcript-based tool can get. 📎 sends a photo or
+screenshot: harness saves it under `~/.harness/uploads` and hands the
+session its path, which is how Claude reads images. It is meant for a phone: answer a permission prompt from the
 sofa instead of leaving agents stuck until you are back.
 
 It listens on **loopback only**; `tailscale serve` publishes it on the

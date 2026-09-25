@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/teceer/harness/internal/ansi"
 	"github.com/teceer/harness/internal/config"
 	"github.com/teceer/harness/internal/store"
 	"github.com/teceer/harness/internal/tmux"
@@ -133,6 +135,9 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/state", s.auth(s.state))
 	mux.Handle("GET /api/events", s.auth(s.events))
 	mux.Handle("GET /api/sessions/{id}/messages", s.auth(s.messages))
+	mux.Handle("GET /api/sessions/{id}/stream", s.auth(s.messageStream))
+	mux.Handle("GET /api/sessions/{id}/pane", s.auth(s.paneStream))
+	mux.Handle("POST /api/sessions/{id}/upload", s.auth(s.upload))
 	mux.Handle("POST /api/sessions/{id}/send", s.auth(s.send))
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
 	mux.Handle("POST /api/sessions/{id}/resume", s.auth(s.resume))
@@ -290,6 +295,77 @@ func (s *webServer) messages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"label": label(se), "status": se.Status, "detail": se.Detail, "messages": msgs})
 }
 
+// messageStream pushes the conversation as it grows: Claude Code appends
+// to the transcript per block (a paragraph, a tool call), so a phone sees
+// each answer within a second of it being written, without reloading.
+func (s *webServer) messageStream(w http.ResponseWriter, r *http.Request) {
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	s.stream(w, r, 400*time.Millisecond, func() (string, any) {
+		fi, err := os.Stat(se.TranscriptPath)
+		if err != nil {
+			return "", nil
+		}
+		version := fmt.Sprintf("%d/%d", fi.ModTime().UnixNano(), fi.Size())
+		msgs, err := transcript.Tail(se.TranscriptPath, 30)
+		if err != nil {
+			return "", nil
+		}
+		return version, map[string]any{"messages": msgs}
+	})
+}
+
+// paneStream mirrors the tmux pane a few times a second: the terminal as
+// it is, spinner and tool output included, for watching a session work.
+func (s *webServer) paneStream(w http.ResponseWriter, r *http.Request) {
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if se.TmuxPane == "" {
+		http.Error(w, "session is not running in harness", http.StatusConflict)
+		return
+	}
+	s.stream(w, r, 350*time.Millisecond, func() (string, any) {
+		raw, err := tmux.Capture(se.TmuxPane)
+		if err != nil {
+			return "", nil
+		}
+		return raw, map[string]any{"html": ansi.HTML(raw)}
+	})
+}
+
+// stream sends payload over SSE whenever version changes; the version also
+// keeps us from re-sending an unchanged screen.
+func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every time.Duration, read func() (version string, payload any)) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	last := "\x00"
+	for {
+		version, payload := read()
+		if payload != nil && version != last {
+			last = version
+			data, _ := json.Marshal(payload)
+			fmt.Fprintf(w, "data: %s\n\n", data)
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(every):
+		}
+	}
+}
+
 // ---- actions ----
 
 type sendBody struct {
@@ -390,6 +466,68 @@ func (s *webServer) newSession(w http.ResponseWriter, r *http.Request) {
 	tmux.FitToSlot(pane, s.cfg.SidebarWidth)
 	s.logAction(r, "new session in %s [%s]", dir, prof.Name)
 	writeJSON(w, map[string]string{"ok": "1"})
+}
+
+// maxUpload bounds a picture sent from the phone.
+const maxUpload = 25 << 20
+
+// upload takes a photo or screenshot from the phone, saves it under
+// ~/.harness/uploads and hands the session its path — which is how Claude
+// Code reads images. Any note travels with it in the same message.
+func (s *webServer) upload(w http.ResponseWriter, r *http.Request) {
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if se.TmuxPane == "" || !paneExists(se.TmuxPane) {
+		http.Error(w, "session is not running in harness", http.StatusConflict)
+		return
+	}
+	if err := r.ParseMultipartForm(maxUpload); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	file, head, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+
+	dir := filepath.Join(s.cfg.Home, "uploads")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// The name comes from a phone: keep only a sane base name.
+	name := filepath.Base(filepath.Clean(head.Filename))
+	if name == "." || name == string(filepath.Separator) || name == "" {
+		name = "upload"
+	}
+	path := filepath.Join(dir, time.Now().Format("20060102-150405")+"-"+name)
+	dst, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, err := io.Copy(dst, http.MaxBytesReader(w, file, maxUpload)); err != nil {
+		dst.Close()
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	dst.Close()
+
+	text := path
+	if note := strings.TrimSpace(r.FormValue("text")); note != "" {
+		text += " " + note
+	}
+	if err := tmux.SendText(se.TmuxPane, text); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.logAction(r, "upload %s to %s", name, short(se.ID))
+	writeJSON(w, map[string]string{"ok": "1", "path": path})
 }
 
 // ---- notifications ----

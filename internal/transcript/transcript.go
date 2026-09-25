@@ -103,12 +103,24 @@ func assistantText(raw json.RawMessage) string {
 
 // Message is one turn of the visible conversation.
 type Message struct {
-	Role string // "user" or "assistant"
-	Text string
+	Role   string // "user" or "assistant"
+	Text   string
+	Images []Image `json:",omitempty"`
 }
 
-// tailPreview bounds the read for Tail; previews need only the last turns.
-const tailPreview = 2 << 20
+// Image is a picture pasted into the conversation, as the transcript
+// stores it (base64). Big ones are skipped rather than shipped around.
+type Image struct {
+	MediaType string
+	Data      string
+}
+
+// maxImage bounds one embedded picture (base64 chars).
+const maxImage = 3 << 20
+
+// tailPreview bounds the read for Tail. Pasted images are stored inline as
+// base64, so a few of them can push real messages out of a smaller window.
+const tailPreview = 8 << 20
 
 // Tail returns up to max of the last conversation messages, oldest first:
 // what the user typed and what Claude answered in text. Tool traffic,
@@ -148,14 +160,16 @@ func Tail(path string, max int) ([]Message, error) {
 			continue
 		}
 		var text string
+		var images []Image
 		switch e.Type {
 		case "assistant":
 			text = assistantText(e.Message.Content)
 		case "user":
 			text = userText(e.Message.Content)
+			images = userImages(e.Message.Content)
 		}
-		if text != "" {
-			out = append(out, Message{Role: e.Type, Text: text})
+		if text != "" || len(images) > 0 {
+			out = append(out, Message{Role: e.Type, Text: text, Images: images})
 		}
 	}
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
@@ -189,4 +203,27 @@ func userText(raw json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+// userImages returns the pictures pasted into a message.
+func userImages(raw json.RawMessage) []Image {
+	var blocks []struct {
+		Type   string `json:"type"`
+		Source struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	var out []Image
+	for _, b := range blocks {
+		if b.Type != "image" || b.Source.Type != "base64" || len(b.Source.Data) > maxImage {
+			continue
+		}
+		out = append(out, Image{MediaType: b.Source.MediaType, Data: b.Source.Data})
+	}
+	return out
 }

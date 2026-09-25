@@ -330,6 +330,12 @@ func SendText(pane, text string) error {
 	return err
 }
 
+// Capture returns what a pane shows, colours included, for the remote
+// live view. -J rejoins wrapped lines, -e keeps the SGR sequences.
+func Capture(pane string) (string, error) {
+	return run("capture-pane", "-e", "-p", "-J", "-t", pane)
+}
+
 // SendKey presses one named key in pane (Enter, Escape, 1, y, …).
 func SendKey(pane, key string) error {
 	_, err := run("send-keys", "-t", pane, key)

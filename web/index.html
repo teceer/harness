@@ -49,7 +49,14 @@
   .archived,.ended,.starting{color:var(--stopped)}
   .pill{font-size:11px;color:var(--sub);border:1px solid var(--line);border-radius:999px;
     padding:1px 7px;white-space:nowrap}
+  .tabs{display:flex;gap:6px;padding:8px 12px 0;justify-content:center}
+  .tabs button{padding:5px 14px;min-height:32px;font-size:13px;border-radius:999px}
+  .tabs button[aria-pressed=true]{border-color:var(--accent);color:var(--accent);font-weight:600}
   .msgs{overflow-y:auto;padding:12px 16px;flex:1;-webkit-overflow-scrolling:touch}
+  .shot{max-width:100%;border-radius:8px;border:1px solid var(--line);margin-top:6px;display:block}
+  #pane{flex:1;overflow:auto;margin:0;padding:10px 12px;background:#12131c;
+    font:11px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;
+    -webkit-overflow-scrolling:touch;color:var(--text)}
   .msg{margin-bottom:14px;white-space:pre-wrap;word-break:break-word}
   .who{font-size:12px;font-weight:700;margin-bottom:2px}
   .who.you{color:var(--accent)} .who.claude{color:#c792ea}
@@ -87,10 +94,17 @@
 </div></main>
 
 <section id="session" class="view">
+  <div class="tabs">
+    <button id="tabChat" aria-pressed="true">conversation</button>
+    <button id="tabLive" aria-pressed="false">live</button>
+  </div>
   <div class="msgs" id="msgs"></div>
+  <pre id="pane" hidden></pre>
   <footer><div class="inner">
     <div class="keys" id="keys"></div>
     <div class="send">
+      <button id="attach" class="icon" title="send a photo or screenshot">📎</button>
+      <input type="file" id="file" accept="image/*" hidden>
       <textarea id="text" rows="1" placeholder="reply to this session…"></textarea>
       <button class="primary" id="send">send</button>
     </div>
@@ -113,6 +127,7 @@ const esc = s => (s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':
 const glyph = {working:'●', waiting:'◆', idle:'○', starting:'◌', archived:'▪', ended:'·'};
 let state = {sessions:[], dirs:[]};
 let filter = localStorage.getItem('harness-profile') || '';
+let live = false, chatES = null, paneES = null;
 
 // Same stable colour per profile as the sidebar, so teceer/epc/networkrail
 // look the same on the phone as on the Mac.
@@ -151,13 +166,46 @@ function route() {
   $('status').hidden = $('profile').hidden = !id;
   $('title').classList.toggle('home', !id);
   if (!id) {
+    closeStreams();
     $('title').textContent = 'harness';
     renderList();
     return;
   }
   paintSession();
-  loadMessages(id);
+  watchSession(id);
 }
+
+// One session: the conversation streams from the transcript, the live tab
+// mirrors the tmux pane. Only the visible one is streamed.
+function watchSession(id) {
+  closeStreams();
+  $('tabChat').setAttribute('aria-pressed', !live);
+  $('tabLive').setAttribute('aria-pressed', live);
+  $('msgs').hidden = live;
+  $('pane').hidden = !live;
+  if (!live) {
+    $('msgs').innerHTML = '<div class="inner"><p class="note">loading…</p></div>';
+    chatES = stream(id, 'stream', d => renderMessages(d.messages));
+  } else {
+    $('pane').textContent = 'connecting…';
+    paneES = stream(id, 'pane', d => { $('pane').innerHTML = d.html; });
+  }
+}
+
+function stream(id, what, onData) {
+  const es = new EventSource(`/api/sessions/${encodeURIComponent(id)}/${what}?t=${encodeURIComponent(token)}`);
+  es.onmessage = e => { if (currentId() === id) onData(JSON.parse(e.data)); };
+  es.onerror = () => { if (what === 'pane') $('pane').textContent = 'not running in harness'; };
+  return es;
+}
+
+function closeStreams() {
+  chatES?.close(); paneES?.close();
+  chatES = paneES = null;
+}
+
+$('tabChat').onclick = () => { live = false; watchSession(currentId()); };
+$('tabLive').onclick = () => { live = true; watchSession(currentId()); };
 
 // ---- list ----
 function renderFilters() {
@@ -237,17 +285,18 @@ function paintSession() {
   $('note').textContent = s.running ? s.dir : (s.resumable ? 'stopped — resume to answer' : s.dir);
 }
 
-async function loadMessages(id) {
-  $('msgs').innerHTML = '<div class="inner"><p class="note">loading…</p></div>';
-  try {
-    const d = await api(`/api/sessions/${encodeURIComponent(id)}/messages`);
-    if (currentId() !== id) return; // moved on while loading
-    const body = (d.messages || []).map(m => `<div class="msg ${m.Role === 'user' ? 'you' : ''}">
-        <div class="who ${m.Role === 'user' ? 'you' : 'claude'}">${m.Role === 'user' ? 'you' : 'claude'}</div>
-        <div class="body">${esc(m.Text)}</div></div>`).join('') || '<p class="note">no messages yet</p>';
-    $('msgs').innerHTML = `<div class="inner">${body}</div>`;
-    $('msgs').scrollTop = $('msgs').scrollHeight;
-  } catch (e) { $('msgs').innerHTML = `<div class="inner"><p class="err">${esc(e.message)}</p></div>`; }
+function renderMessages(msgs) {
+  const atBottom = $('msgs').scrollTop + $('msgs').clientHeight > $('msgs').scrollHeight - 80;
+  const body = (msgs || []).map(m => {
+    const who = m.Role === 'user' ? 'you' : 'claude';
+    const pics = (m.Images || []).map(i =>
+      `<img class="shot" src="data:${esc(i.MediaType)};base64,${esc(i.Data)}" alt="">`).join('');
+    return `<div class="msg ${m.Role === 'user' ? 'you' : ''}">
+        <div class="who ${who}">${who}</div>
+        <div class="body">${esc(m.Text)}</div>${pics}</div>`;
+  }).join('') || '<p class="note">no messages yet</p>';
+  $('msgs').innerHTML = `<div class="inner">${body}</div>`;
+  if (atBottom) $('msgs').scrollTop = $('msgs').scrollHeight;
 }
 
 async function act(what, body, force) {
@@ -255,7 +304,6 @@ async function act(what, body, force) {
   try {
     if (what === 'send') await api(`/api/sessions/${encodeURIComponent(id)}/send`, {method:'POST', body:JSON.stringify(body)});
     else await api(`/api/sessions/${encodeURIComponent(id)}/${what}${force ? '?force=1' : ''}`, {method:'POST'});
-    if (what === 'send') setTimeout(() => loadMessages(id), 1200);
   } catch (e) {
     // archiving a busy session needs a second yes, as it does in the sidebar
     if (what === 'archive' && !force && confirm(e.message + '\n\nArchive anyway?')) return act(what, body, true);
@@ -269,6 +317,23 @@ $('send').onclick = async () => {
   $('text').value = '';
   $('text').style.height = 'auto';
   await act('send', {text});
+};
+$('attach').onclick = () => $('file').click();
+$('file').onchange = async () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  const form = new FormData();
+  form.append('file', f);
+  form.append('text', $('text').value.trim());
+  $('text').value = '';
+  $('note').textContent = 'sending ' + f.name + '…';
+  try {
+    const d = await fetch(`/api/sessions/${encodeURIComponent(currentId())}/upload`,
+      {method:'POST', headers:{'Authorization':'Bearer '+token}, body:form});
+    if (!d.ok) throw new Error((await d.text()).trim());
+    $('note').textContent = 'sent — the session got the file path';
+  } catch (e) { $('note').innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  $('file').value = '';
 };
 $('text').addEventListener('input', e => {
   e.target.style.height = 'auto';
