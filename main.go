@@ -20,6 +20,7 @@ const usage = `harness — Claude Code session control
   harness new [-p profile] [-n name] [-d] [dir] [-- claude args]
                                      start claude in a tmux window
   harness switch prev|next|1…9       show another session (⌘[ ⌘] ⌥1…⌥9)
+  harness serve [--port 7777]        remote control over Tailscale
   harness preview <id>               print a session's recent conversation
   harness attach <id>                focus a session's tmux pane
   harness move [-d] <id>             take over a session from a terminal tab
@@ -53,6 +54,8 @@ func main() {
 		err = cmdSidebar(args)
 	case "switch":
 		err = cmdSwitch(args)
+	case "serve":
+		err = cmdServe(args)
 	case "preview":
 		err = cmdPreview(args)
 	case "ls", "list":

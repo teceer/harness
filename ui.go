@@ -299,13 +299,15 @@ func (m *sidebar) Init() tea.Cmd {
 	return tea.Batch(m.load(true), tick())
 }
 
-// stamp fingerprints everything that signals new state: the database (hooks
-// write it) and ui.bump (touched by `harness switch`). A change reloads the
-// sidebar within one poll instead of waiting for the next refresh.
-func (m *sidebar) stamp() string {
+func (m *sidebar) stamp() string { return stateStamp(m.cfg.Home) }
+
+// stateStamp fingerprints everything that signals new state: the database
+// (hooks write it) and ui.bump (touched by `harness switch`). Watchers
+// reload on a change instead of waiting for their next refresh.
+func stateStamp(home string) string {
 	var b strings.Builder
 	for _, name := range []string{"state.db", "state.db-wal", bumpFile} {
-		if fi, err := os.Stat(filepath.Join(m.cfg.Home, name)); err == nil {
+		if fi, err := os.Stat(filepath.Join(home, name)); err == nil {
 			fmt.Fprintf(&b, "%d/%d;", fi.ModTime().UnixNano(), fi.Size())
 		}
 	}

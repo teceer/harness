@@ -122,6 +122,40 @@ Sessions started outside harness (plain iTerm tabs) are tracked too, as soon
 as they fire a hook; archiving them needs `-f` (SIGTERM), `harness move`
 takes them over into the harness tmux.
 
+## Remote control (phone)
+
+```sh
+harness serve          # prints the URL, token included
+```
+
+A small web app — the same session list, the recent conversation of any
+session, a reply box, archive / resume and starting a session in a known
+directory. It is meant for a phone: answer a permission prompt from the
+sofa instead of leaving agents stuck until you are back.
+
+It listens on **the Tailscale address and loopback only**, never on a
+public interface, and every API call carries the token from
+`~/.harness/web-token` (`?t=…` once, then kept in the browser). Remote
+actions can only type into existing sessions or press one of a few allowed
+keys (`Enter`, `Escape`, `1`, `2`, `y`, `n`, …): there is no endpoint that
+runs a command. Every action is logged with the caller's address.
+
+This is still remote control of a machine that runs Claude Code, often with
+relaxed permissions. Do not put it behind a public tunnel; if you must,
+require an identity check (e.g. ngrok's OAuth), not just the token.
+
+Notifications tell you when a session starts waiting for you or finishes a
+turn. `notify_command` runs via `sh` with the text in `$HARNESS_MESSAGE`
+(and `$HARNESS_SESSION`, `$HARNESS_STATUS`), so any channel works:
+
+```toml
+notify_command = "curl -sS -X POST https://api.telegram.org/bot$TOKEN/sendMessage -d chat_id=$CHAT --data-urlencode text=\"$HARNESS_MESSAGE\""
+web_url = "http://your-mac.tailnet.ts.net:7777"
+```
+
+Both are top-level keys: in TOML they must come **before** the first
+`[profiles.…]` table, or they end up inside it.
+
 ## Profiles
 
 `~/.harness/config.toml` (written on first run) maps directory roots to an

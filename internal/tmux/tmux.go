@@ -320,6 +320,22 @@ func Reload() {
 	}
 }
 
+// SendText types text into pane and submits it (as the remote control
+// answers a Claude prompt). -l keeps it literal: no key names, no escapes.
+func SendText(pane, text string) error {
+	if _, err := run("send-keys", "-t", pane, "-l", text); err != nil {
+		return err
+	}
+	_, err := run("send-keys", "-t", pane, "Enter")
+	return err
+}
+
+// SendKey presses one named key in pane (Enter, Escape, 1, y, …).
+func SendKey(pane, key string) error {
+	_, err := run("send-keys", "-t", pane, key)
+	return err
+}
+
 // Focus moves the keyboard to pane.
 func Focus(pane string) error {
 	_, err := run("select-pane", "-t", pane)

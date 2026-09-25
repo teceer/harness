@@ -30,11 +30,16 @@ func (p Profile) ConfigDir() string {
 
 type Config struct {
 	// Claude is the claude binary; resolved from PATH when empty.
-	Claude       string             `toml:"claude"`
-	TmuxSession  string             `toml:"tmux_session"`
-	IdleArchive  string             `toml:"idle_archive"`
-	SidebarWidth int                `toml:"sidebar_width"`
-	Profiles     map[string]Profile `toml:"profiles"`
+	Claude       string `toml:"claude"`
+	TmuxSession  string `toml:"tmux_session"`
+	IdleArchive  string `toml:"idle_archive"`
+	SidebarWidth int    `toml:"sidebar_width"`
+	// NotifyCommand is run (via sh) when a session starts waiting for an
+	// answer or finishes a turn, with the text in $HARNESS_MESSAGE.
+	NotifyCommand string `toml:"notify_command"`
+	// WebURL is how `harness serve` is reached, for links in notifications.
+	WebURL   string             `toml:"web_url"`
+	Profiles map[string]Profile `toml:"profiles"`
 
 	Home string `toml:"-"`
 }
@@ -44,6 +49,12 @@ const defaultConfig = `# harness configuration
 tmux_session = "harness"
 idle_archive = "45m"                        # used by 'harness gc'
 sidebar_width = 42                          # columns of the 'harness ui' sidebar
+
+# Remote control (harness serve) and notifications. The command runs via sh
+# with the text in $HARNESS_MESSAGE; it fires when a session starts waiting
+# for you or finishes a turn.
+# notify_command = "curl -sS -X POST ... --data-urlencode text=\"$HARNESS_MESSAGE\""
+# web_url = "http://your-machine.tailnet.ts.net:7777"
 
 # A profile groups sessions in the sidebar and decides the environment
 # a new/resumed session is started with. Matching is by longest root prefix.
