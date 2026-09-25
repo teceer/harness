@@ -32,6 +32,10 @@
   .inner{max-width:760px;margin:0 auto;width:100%}
   .section{color:var(--sub);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
     margin:18px 6px 8px;font-weight:700}
+  .profile{font-size:12px;font-weight:700;margin:10px 6px 6px}
+  .filters{display:flex;gap:6px;overflow-x:auto;padding:8px 2px 2px;-webkit-overflow-scrolling:touch}
+  .filters button{padding:5px 11px;min-height:32px;font-size:13px;border-radius:999px;white-space:nowrap}
+  .filters button[aria-pressed=true]{border-color:var(--accent);color:var(--accent);font-weight:600}
   .row{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);
     border-radius:12px;padding:12px;margin-bottom:8px;width:100%;text-align:left}
   .row .grow{flex:1;min-width:0}
@@ -72,11 +76,15 @@
   <button id="back" class="icon" hidden>‹</button>
   <h1 id="title" class="home">harness</h1>
   <span id="conn" class="pill">…</span>
+  <span id="profile" class="pill" hidden></span>
   <span id="status" class="pill" hidden></span>
   <button id="newBtn" class="icon">+</button>
 </header>
 
-<main id="list" class="view on"><div class="inner" id="rows"><p class="note">connecting…</p></div></main>
+<main id="list" class="view on"><div class="inner">
+  <div class="filters" id="filters"></div>
+  <div id="rows"><p class="note">connecting…</p></div>
+</div></main>
 
 <section id="session" class="view">
   <div class="msgs" id="msgs"></div>
@@ -104,6 +112,17 @@ const $ = id => document.getElementById(id);
 const esc = s => (s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const glyph = {working:'●', waiting:'◆', idle:'○', starting:'◌', archived:'▪', ended:'·'};
 let state = {sessions:[], dirs:[]};
+let filter = localStorage.getItem('harness-profile') || '';
+
+// Same stable colour per profile as the sidebar, so teceer/epc/networkrail
+// look the same on the phone as on the Mac.
+const profileColors = ['#7aa2ff','#ffb547','#c792ea','#4fd6be','#ff7eb6','#9ece6a'];
+function profileColor(name) {
+  if (!name || name === 'other') return 'var(--sub)';
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.codePointAt(0)) | 0;
+  return profileColors[Math.abs(h) % profileColors.length];
+}
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {...opts, headers:{...(opts.headers||{}), 'Authorization':'Bearer '+token,
@@ -129,7 +148,7 @@ function route() {
   $('session').classList.toggle('on', !!id);
   $('back').hidden = !id;
   $('newBtn').hidden = !!id;
-  $('status').hidden = !id;
+  $('status').hidden = $('profile').hidden = !id;
   $('title').classList.toggle('home', !id);
   if (!id) {
     $('title').textContent = 'harness';
@@ -141,16 +160,45 @@ function route() {
 }
 
 // ---- list ----
+function renderFilters() {
+  const counts = {};
+  for (const s of state.sessions) if (s.section !== 'ended') counts[s.profile] = (counts[s.profile] || 0) + 1;
+  const names = Object.keys(counts).sort();
+  if (filter && !counts[filter]) filter = ''; // that profile has nothing right now
+  const chip = (value, text, color) =>
+    `<button data-filter="${esc(value)}" aria-pressed="${filter === value}"
+       ${color ? `style="color:${color}"` : ''}>${esc(text)}</button>`;
+  $('filters').innerHTML = names.length < 2 ? '' :
+    chip('', 'all') + names.map(n => chip(n, `${n} ${counts[n]}`, profileColor(n))).join('');
+  for (const b of $('filters').querySelectorAll('[data-filter]')) b.onclick = () => {
+    filter = b.dataset.filter;
+    localStorage.setItem('harness-profile', filter);
+    renderList();
+  };
+}
+
 function renderList() {
+  renderFilters();
+  const shown = state.sessions.filter(s => !filter || s.profile === filter);
   const groups = {};
-  for (const s of state.sessions) (groups[s.section] ||= []).push(s);
+  for (const s of shown) (groups[s.section] ||= []).push(s);
   let html = '';
   for (const name of ['active', 'outside harness', 'archived', 'ended']) {
     const rows = groups[name];
     if (!rows?.length) continue;
-    html += `<div class="section">${esc(name)} · ${rows.length}</div>` + rows.map(row).join('');
+    html += `<div class="section">${esc(name)} · ${rows.length}</div>`;
+    let profile = null;
+    for (const s of rows) {
+      // one company at a time, as in the sidebar; with a filter on there is
+      // only one profile left, so the subheader would be noise
+      if (!filter && s.profile !== profile) {
+        profile = s.profile;
+        html += `<div class="profile" style="color:${profileColor(profile)}">${esc(profile)}</div>`;
+      }
+      html += row(s);
+    }
   }
-  $('rows').innerHTML = html || '<p class="note">no sessions yet</p>';
+  $('rows').innerHTML = html || '<p class="note">nothing here</p>';
   $('dirs').innerHTML = state.dirs.map(d => `<option value="${esc(d)}">`).join('');
   for (const el of $('rows').querySelectorAll('[data-id]')) el.onclick = () => open(el.dataset.id);
 }
@@ -176,6 +224,9 @@ function paintSession() {
   $('title').textContent = s.label;
   $('status').textContent = s.status + (s.detail && s.status === 'working' ? ' · ' + s.detail : '');
   $('status').className = 'pill ' + s.status;
+  $('profile').textContent = s.profile;
+  $('profile').style.color = profileColor(s.profile);
+  $('profile').hidden = false;
   const keys = s.status === 'waiting' ? ['Enter', '1', '2', 'Escape'] : ['Enter', 'Escape'];
   $('keys').innerHTML = s.running
     ? keys.map(k => `<button data-key="${k}">${k}</button>`).join('') + '<button data-act="archive">archive</button>'

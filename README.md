@@ -128,9 +128,9 @@ takes them over into the harness tmux.
 harness serve          # prints the URL, token included
 ```
 
-A small web app — the same session list, the recent conversation of any
-session, a reply box, archive / resume and starting a session in a known
-directory. It is meant for a phone: answer a permission prompt from the
+A small web app — the same session list (grouped by profile, with a filter
+per profile), the recent conversation of any session on its own page, a
+reply box, archive / resume and starting a session in a known directory. It is meant for a phone: answer a permission prompt from the
 sofa instead of leaving agents stuck until you are back.
 
 It listens on **loopback only**; `tailscale serve` publishes it on the
