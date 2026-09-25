@@ -133,8 +133,15 @@ session, a reply box, archive / resume and starting a session in a known
 directory. It is meant for a phone: answer a permission prompt from the
 sofa instead of leaving agents stuck until you are back.
 
-It listens on **the Tailscale address and loopback only**, never on a
-public interface, and every API call carries the token from
+It listens on **loopback only**; `tailscale serve` publishes it on the
+tailnet (`http://<machine>.<tailnet>.ts.net:7777`) and proxies to
+127.0.0.1. That keeps the listener off every real interface, and inbound
+connections are accepted by Tailscale itself — the macOS firewall silently
+drops them for an unsigned binary like this one, which is why binding the
+tailnet address directly does not work. Use the MagicDNS name, not the
+100.x address. `--no-tailscale` skips publishing.
+
+Every API call carries the token from
 `~/.harness/web-token` (`?t=…` once, then kept in the browser). Remote
 actions can only type into existing sessions or press one of a few allowed
 keys (`Enter`, `Escape`, `1`, `2`, `y`, `n`, …): there is no endpoint that

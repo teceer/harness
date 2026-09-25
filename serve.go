@@ -15,8 +15,10 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/teceer/harness/internal/config"
@@ -29,14 +31,18 @@ import (
 var webFS embed.FS
 
 // cmdServe runs the remote control: the same session list as the sidebar,
-// readable and answerable from a phone. It listens on the Tailscale address
-// (and loopback) only — never on a public interface — and every API call
-// carries the token from ~/.harness/web-token.
+// readable and answerable from a phone.
+//
+// It listens on loopback only. Reaching it from the tailnet goes through
+// `tailscale serve`, which proxies to 127.0.0.1: that keeps the listener
+// off every real interface, and the connection is accepted by Tailscale —
+// already allowed through the macOS firewall, which silently drops inbound
+// connections to an unsigned binary like this one.
 func cmdServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	addr := fs.String("addr", "", "extra address to listen on (default: the Tailscale one)")
 	port := fs.Int("port", 7777, "port")
-	public := fs.Bool("i-know-this-exposes-my-mac", false, "also listen on every interface")
+	addr := fs.String("addr", "127.0.0.1", "address to listen on")
+	noTailscale := fs.Bool("no-tailscale", false, "do not publish through `tailscale serve`")
 	fs.Parse(args)
 
 	return withStore(func(cfg *config.Config, st *store.Store) error {
@@ -48,32 +54,71 @@ func cmdServe(args []string) error {
 		mux := http.NewServeMux()
 		srv.routes(mux)
 
-		hosts := []string{"127.0.0.1"}
-		switch {
-		case *public:
-			hosts = []string{""}
-		case *addr != "":
-			hosts = append(hosts, *addr)
-		default:
-			if ip := tailscaleIP(); ip != "" {
-				hosts = append(hosts, ip)
+		ln, err := net.Listen("tcp", net.JoinHostPort(*addr, fmt.Sprint(*port)))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("harness: http://%s/?t=%s\n", ln.Addr(), token)
+
+		if !*noTailscale {
+			if host, err := tailscaleServe(*port); err != nil {
+				fmt.Fprintln(os.Stderr, "harness: tailscale serve:", err)
 			} else {
-				fmt.Fprintln(os.Stderr, "harness: no Tailscale address found — serving on 127.0.0.1 only")
+				fmt.Printf("harness: http://%s:%d/?t=%s  (tailnet)\n", host, *port, token)
+				defer tailscaleServeOff(*port)
 			}
 		}
 
 		go srv.watch()
-		errs := make(chan error, len(hosts))
-		for _, h := range hosts {
-			ln, err := net.Listen("tcp", net.JoinHostPort(h, fmt.Sprint(*port)))
-			if err != nil {
-				return err
-			}
-			fmt.Printf("harness: http://%s/?t=%s\n", ln.Addr(), token)
-			go func() { errs <- http.Serve(ln, mux) }()
+		stop := make(chan os.Signal, 1)
+		signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+		errs := make(chan error, 1)
+		go func() { errs <- http.Serve(ln, mux) }()
+		select {
+		case err := <-errs:
+			return err
+		case <-stop:
+			return nil
 		}
-		return <-errs
 	})
+}
+
+// tailscaleServe publishes the local port on the tailnet and returns this
+// machine's MagicDNS name.
+func tailscaleServe(port int) (string, error) {
+	bin, err := tailscaleBin()
+	if err != nil {
+		return "", err
+	}
+	target := fmt.Sprintf("http://127.0.0.1:%d", port)
+	out, err := exec.Command(bin, "serve", "--bg", fmt.Sprintf("--http=%d", port), target).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	host, err := exec.Command(bin, "status", "--json").Output()
+	if err != nil {
+		return "", err
+	}
+	var st struct {
+		Self struct{ DNSName string }
+	}
+	json.Unmarshal(host, &st)
+	return strings.TrimSuffix(st.Self.DNSName, "."), nil
+}
+
+func tailscaleServeOff(port int) {
+	if bin, err := tailscaleBin(); err == nil {
+		exec.Command(bin, "serve", "--bg", fmt.Sprintf("--http=%d", port), "off").Run()
+	}
+}
+
+func tailscaleBin() (string, error) {
+	for _, bin := range []string{"tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"} {
+		if path, err := exec.LookPath(bin); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New("tailscale not found")
 }
 
 type webServer struct {
@@ -439,18 +484,4 @@ func webToken(cfg *config.Config) (string, error) {
 	}
 	token := base64.RawURLEncoding.EncodeToString(buf)
 	return token, os.WriteFile(path, []byte(token+"\n"), 0o600)
-}
-
-// tailscaleIP is this machine's tailnet address, "" when Tailscale is not
-// running. The CLI ships inside the app bundle on macOS.
-func tailscaleIP() string {
-	for _, bin := range []string{"tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"} {
-		out, err := exec.Command(bin, "ip", "-4").Output()
-		if err == nil {
-			if ip := strings.TrimSpace(strings.Split(string(out), "\n")[0]); ip != "" {
-				return ip
-			}
-		}
-	}
-	return ""
 }
