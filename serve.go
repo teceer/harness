@@ -129,6 +129,7 @@ type webServer struct {
 
 func (s *webServer) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", s.page)
+	mux.HandleFunc("GET /s/{id}", s.page) // one session, its own page
 	mux.Handle("GET /api/state", s.auth(s.state))
 	mux.Handle("GET /api/events", s.auth(s.events))
 	mux.Handle("GET /api/sessions/{id}/messages", s.auth(s.messages))
@@ -429,8 +430,8 @@ func (s *webServer) notify(se store.Session, title, body string) {
 		msg += "\n" + trim(body, 300)
 	}
 	if s.cfg.WebURL != "" {
-		msg += "\n" + strings.TrimRight(s.cfg.WebURL, "/") + "/?t=" + url.QueryEscape(s.token) +
-			"#" + url.PathEscape(se.ID)
+		msg += "\n" + strings.TrimRight(s.cfg.WebURL, "/") + "/s/" + url.PathEscape(se.ID) +
+			"?t=" + url.QueryEscape(s.token)
 	}
 	cmd := exec.Command("sh", "-c", s.cfg.NotifyCommand)
 	cmd.Env = append(os.Environ(), "HARNESS_MESSAGE="+msg, "HARNESS_SESSION="+se.ID, "HARNESS_STATUS="+se.Status)

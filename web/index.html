@@ -12,22 +12,28 @@
     --idle:#5ee38f; --stopped:#7c849c;
   }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--text);display:flex;flex-direction:column;
     font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
     padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
   header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);
-    display:flex;align-items:center;gap:12px;padding:12px 16px;z-index:10}
-  header h1{font-size:16px;margin:0;font-weight:700;color:var(--accent);flex:1}
+    display:flex;align-items:center;gap:10px;padding:10px 14px;z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:700;flex:1;white-space:nowrap;overflow:hidden;
+    text-overflow:ellipsis}
+  header h1.home{color:var(--accent)}
   button{font:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);
     border-radius:10px;padding:9px 14px;min-height:40px}
   button:active{background:#2a3350}
   button.primary{background:var(--accent);border-color:var(--accent);color:#10131c;font-weight:600}
-  main{padding:8px 12px 24px;max-width:760px;margin:0 auto}
+  button.icon{padding:8px 13px;font-size:17px;line-height:1}
+  .view{flex:1;min-height:0;display:none;flex-direction:column}
+  .view.on{display:flex}
+  #list{overflow-y:auto;padding:8px 12px 24px}
+  .inner{max-width:760px;margin:0 auto;width:100%}
   .section{color:var(--sub);font-size:12px;letter-spacing:.08em;text-transform:uppercase;
     margin:18px 6px 8px;font-weight:700}
   .row{display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);
     border-radius:12px;padding:12px;margin-bottom:8px;width:100%;text-align:left}
-  .row .dot{font-size:13px;line-height:1.4}
   .row .grow{flex:1;min-width:0}
   .row .title{display:flex;gap:8px;align-items:baseline}
   .row .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -37,64 +43,59 @@
   .num{color:var(--muted);font-size:12px;min-width:14px}
   .working{color:var(--working)} .waiting{color:var(--waiting)} .idle{color:var(--idle)}
   .archived,.ended,.starting{color:var(--stopped)}
-  .pill{font-size:11px;color:var(--sub);border:1px solid var(--line);border-radius:999px;padding:1px 7px}
-  dialog{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:16px;
-    width:min(760px,96vw);max-height:92vh;padding:0}
-  dialog::backdrop{background:#000a}
-  .sheet{display:flex;flex-direction:column;max-height:92vh}
-  .sheet header{border-radius:16px 16px 0 0}
+  .pill{font-size:11px;color:var(--sub);border:1px solid var(--line);border-radius:999px;
+    padding:1px 7px;white-space:nowrap}
   .msgs{overflow-y:auto;padding:12px 16px;flex:1;-webkit-overflow-scrolling:touch}
   .msg{margin-bottom:14px;white-space:pre-wrap;word-break:break-word}
   .who{font-size:12px;font-weight:700;margin-bottom:2px}
   .who.you{color:var(--accent)} .who.claude{color:#c792ea}
   .msg .body{color:var(--sub)}
   .msg.you .body{color:var(--text)}
-  footer{border-top:1px solid var(--line);padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+  footer{border-top:1px solid var(--line);padding:10px 12px}
+  footer .inner{display:flex;flex-direction:column;gap:8px}
   .keys{display:flex;gap:6px;flex-wrap:wrap}
   .keys button{padding:6px 10px;min-height:34px;font-size:13px}
   textarea{width:100%;background:var(--card);color:var(--text);border:1px solid var(--line);
-    border-radius:10px;padding:10px;font:inherit;resize:none;min-height:44px}
+    border-radius:10px;padding:10px;font:inherit;resize:none;min-height:44px;max-height:40vh}
   .send{display:flex;gap:8px;align-items:flex-end}
   .note{color:var(--muted);font-size:12px;padding:0 4px}
   .err{color:var(--waiting);font-size:13px;padding:8px 4px}
+  dialog{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:16px;
+    width:min(760px,96vw);padding:16px}
+  dialog::backdrop{background:#000a}
   input[type=text]{width:100%;background:var(--card);color:var(--text);border:1px solid var(--line);
-    border-radius:10px;padding:10px;font:inherit}
+    border-radius:10px;padding:10px;font:inherit;margin:10px 0}
 </style>
 </head>
 <body>
 <header>
-  <h1>harness</h1>
+  <button id="back" class="icon" hidden>‹</button>
+  <h1 id="title" class="home">harness</h1>
   <span id="conn" class="pill">…</span>
-  <button id="newBtn">+ new</button>
+  <span id="status" class="pill" hidden></span>
+  <button id="newBtn" class="icon">+</button>
 </header>
-<main id="list"><p class="note">connecting…</p></main>
 
-<dialog id="detail"><div class="sheet">
-  <header>
-    <h1 id="dTitle">session</h1>
-    <span id="dStatus" class="pill"></span>
-    <button id="dClose">close</button>
-  </header>
-  <div class="msgs" id="dMsgs"></div>
-  <footer>
-    <div class="keys" id="dKeys"></div>
+<main id="list" class="view on"><div class="inner" id="rows"><p class="note">connecting…</p></div></main>
+
+<section id="session" class="view">
+  <div class="msgs" id="msgs"></div>
+  <footer><div class="inner">
+    <div class="keys" id="keys"></div>
     <div class="send">
-      <textarea id="dText" rows="1" placeholder="reply to this session…"></textarea>
-      <button class="primary" id="dSend">send</button>
+      <textarea id="text" rows="1" placeholder="reply to this session…"></textarea>
+      <button class="primary" id="send">send</button>
     </div>
-    <div class="note" id="dNote"></div>
-  </footer>
-</div></dialog>
+    <div class="note" id="note"></div>
+  </div></footer>
+</section>
 
-<dialog id="newDlg"><div class="sheet">
-  <header><h1>new session</h1><button id="nClose">close</button></header>
-  <div class="msgs">
-    <input type="text" id="nDir" list="dirs" placeholder="~/code/project" autocapitalize="off" autocorrect="off" spellcheck="false">
-    <datalist id="dirs"></datalist>
-    <p class="note">the profile (and Claude account) follows the directory</p>
-  </div>
-  <footer><button class="primary" id="nStart">start</button></footer>
-</div></dialog>
+<dialog id="newDlg">
+  <b>new session</b>
+  <input type="text" id="nDir" list="dirs" placeholder="~/code/project" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <datalist id="dirs"></datalist>
+  <div class="send"><button id="nClose">cancel</button><button class="primary" id="nStart">start</button></div>
+</dialog>
 
 <script>
 const token = new URLSearchParams(location.search).get('t') || localStorage.getItem('harness-token') || '';
@@ -102,7 +103,7 @@ if (token) localStorage.setItem('harness-token', token);
 const $ = id => document.getElementById(id);
 const esc = s => (s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const glyph = {working:'●', waiting:'◆', idle:'○', starting:'◌', archived:'▪', ended:'·'};
-let state = {sessions:[], dirs:[]}, openId = null;
+let state = {sessions:[], dirs:[]};
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {...opts, headers:{...(opts.headers||{}), 'Authorization':'Bearer '+token,
@@ -111,28 +112,54 @@ async function api(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-function render() {
+// Routing: the list is /, a session is /s/<id>. Notification links open a
+// session directly, and Back returns to the list.
+const currentId = () => {
+  const m = location.pathname.match(/^\/s\/(.+)$/);
+  return m ? decodeURIComponent(m[1]) : null;
+};
+const go = path => { history.pushState({}, '', path + location.search); route(); };
+const open = id => go('/s/' + encodeURIComponent(id));
+addEventListener('popstate', route);
+$('back').onclick = () => (history.length > 1 ? history.back() : go('/'));
+
+function route() {
+  const id = currentId();
+  $('list').classList.toggle('on', !id);
+  $('session').classList.toggle('on', !!id);
+  $('back').hidden = !id;
+  $('newBtn').hidden = !!id;
+  $('status').hidden = !id;
+  $('title').classList.toggle('home', !id);
+  if (!id) {
+    $('title').textContent = 'harness';
+    renderList();
+    return;
+  }
+  paintSession();
+  loadMessages(id);
+}
+
+// ---- list ----
+function renderList() {
   const groups = {};
   for (const s of state.sessions) (groups[s.section] ||= []).push(s);
-  const order = ['active', 'outside harness', 'archived', 'ended'];
   let html = '';
-  for (const name of order) {
+  for (const name of ['active', 'outside harness', 'archived', 'ended']) {
     const rows = groups[name];
     if (!rows?.length) continue;
-    html += `<div class="section">${esc(name)} · ${rows.length}</div>`;
-    for (const s of rows) html += row(s);
+    html += `<div class="section">${esc(name)} · ${rows.length}</div>` + rows.map(row).join('');
   }
-  $('list').innerHTML = html || '<p class="note">no sessions yet</p>';
+  $('rows').innerHTML = html || '<p class="note">no sessions yet</p>';
   $('dirs').innerHTML = state.dirs.map(d => `<option value="${esc(d)}">`).join('');
-  for (const el of document.querySelectorAll('[data-id]')) el.onclick = () => open(el.dataset.id);
-  if (openId) paintDetail();
+  for (const el of $('rows').querySelectorAll('[data-id]')) el.onclick = () => open(el.dataset.id);
 }
 
 function row(s) {
   const detail = s.status === 'working' && s.detail ? ` <span class="pill">${esc(s.detail)}</span>` : '';
   return `<button class="row" data-id="${esc(s.id)}">
     <span class="num">${s.number || ''}</span>
-    <span class="dot ${s.status}">${glyph[s.status] || '·'}</span>
+    <span class="${s.status}">${glyph[s.status] || '·'}</span>
     <span class="grow">
       <span class="title"><span class="name">${s.shown ? '▌' : ''}${esc(s.label)}</span>${detail}
         <span class="age">${esc(s.age)}</span></span>
@@ -140,65 +167,64 @@ function row(s) {
     </span></button>`;
 }
 
-function session(id) { return state.sessions.find(s => s.id === id); }
+// ---- one session ----
+const session = () => state.sessions.find(s => s.id === currentId());
 
-async function open(id) {
-  openId = id;
-  $('detail').showModal();
-  paintDetail();
-  await loadMessages(id);
-}
-
-function paintDetail() {
-  const s = session(openId);
-  if (!s) return;
-  $('dTitle').textContent = s.label;
-  $('dStatus').textContent = s.status + (s.detail && s.status === 'working' ? ' · ' + s.detail : '');
-  $('dStatus').className = 'pill ' + s.status;
+function paintSession() {
+  const s = session();
+  if (!s) { $('title').textContent = 'session'; return; }
+  $('title').textContent = s.label;
+  $('status').textContent = s.status + (s.detail && s.status === 'working' ? ' · ' + s.detail : '');
+  $('status').className = 'pill ' + s.status;
   const keys = s.status === 'waiting' ? ['Enter', '1', '2', 'Escape'] : ['Enter', 'Escape'];
-  $('dKeys').innerHTML = s.running ? keys.map(k => `<button data-key="${k}">${k}</button>`).join('') +
-      `<button data-act="archive">archive</button>` :
-    (s.resumable ? `<button data-act="resume" class="primary">resume</button>` : '');
-  for (const b of $('dKeys').querySelectorAll('[data-key]')) b.onclick = () => act('send', {key:b.dataset.key});
-  for (const b of $('dKeys').querySelectorAll('[data-act]')) b.onclick = () => act(b.dataset.act);
-  $('dText').disabled = !s.running;
-  $('dSend').disabled = !s.running;
-  $('dNote').textContent = s.running ? s.dir : (s.resumable ? 'stopped — resume to answer' : s.dir);
+  $('keys').innerHTML = s.running
+    ? keys.map(k => `<button data-key="${k}">${k}</button>`).join('') + '<button data-act="archive">archive</button>'
+    : (s.resumable ? '<button data-act="resume" class="primary">resume</button>' : '');
+  for (const b of $('keys').querySelectorAll('[data-key]')) b.onclick = () => act('send', {key:b.dataset.key});
+  for (const b of $('keys').querySelectorAll('[data-act]')) b.onclick = () => act(b.dataset.act);
+  $('text').disabled = $('send').disabled = !s.running;
+  $('note').textContent = s.running ? s.dir : (s.resumable ? 'stopped — resume to answer' : s.dir);
 }
 
 async function loadMessages(id) {
-  $('dMsgs').innerHTML = '<p class="note">loading…</p>';
+  $('msgs').innerHTML = '<div class="inner"><p class="note">loading…</p></div>';
   try {
     const d = await api(`/api/sessions/${encodeURIComponent(id)}/messages`);
-    $('dMsgs').innerHTML = (d.messages || []).map(m => `<div class="msg ${m.Role === 'user' ? 'you' : ''}">
+    if (currentId() !== id) return; // moved on while loading
+    const body = (d.messages || []).map(m => `<div class="msg ${m.Role === 'user' ? 'you' : ''}">
         <div class="who ${m.Role === 'user' ? 'you' : 'claude'}">${m.Role === 'user' ? 'you' : 'claude'}</div>
         <div class="body">${esc(m.Text)}</div></div>`).join('') || '<p class="note">no messages yet</p>';
-    $('dMsgs').scrollTop = $('dMsgs').scrollHeight;
-  } catch (e) { $('dMsgs').innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+    $('msgs').innerHTML = `<div class="inner">${body}</div>`;
+    $('msgs').scrollTop = $('msgs').scrollHeight;
+  } catch (e) { $('msgs').innerHTML = `<div class="inner"><p class="err">${esc(e.message)}</p></div>`; }
 }
 
 async function act(what, body, force) {
-  const id = openId;
-  const q = force ? '?force=1' : '';
+  const id = currentId();
   try {
     if (what === 'send') await api(`/api/sessions/${encodeURIComponent(id)}/send`, {method:'POST', body:JSON.stringify(body)});
-    else await api(`/api/sessions/${encodeURIComponent(id)}/${what}${q}`, {method:'POST'});
+    else await api(`/api/sessions/${encodeURIComponent(id)}/${what}${force ? '?force=1' : ''}`, {method:'POST'});
     if (what === 'send') setTimeout(() => loadMessages(id), 1200);
   } catch (e) {
     // archiving a busy session needs a second yes, as it does in the sidebar
     if (what === 'archive' && !force && confirm(e.message + '\n\nArchive anyway?')) return act(what, body, true);
-    $('dNote').innerHTML = `<span class="err">${esc(e.message)}</span>`;
+    $('note').innerHTML = `<span class="err">${esc(e.message)}</span>`;
   }
 }
 
-$('dSend').onclick = async () => {
-  const text = $('dText').value.trim();
+$('send').onclick = async () => {
+  const text = $('text').value.trim();
   if (!text) return;
-  $('dText').value = '';
+  $('text').value = '';
+  $('text').style.height = 'auto';
   await act('send', {text});
 };
-$('dText').addEventListener('input', e => { e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 'px'; });
-$('dClose').onclick = () => { $('detail').close(); openId = null; };
+$('text').addEventListener('input', e => {
+  e.target.style.height = 'auto';
+  e.target.style.height = e.target.scrollHeight + 'px';
+});
+
+// ---- new session ----
 $('newBtn').onclick = () => { $('nDir').value = state.dirs[0] || '~/'; $('newDlg').showModal(); };
 $('nClose').onclick = () => $('newDlg').close();
 $('nStart').onclick = async () => {
@@ -208,14 +234,18 @@ $('nStart').onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
+// ---- live state ----
+function apply(s) {
+  state = s;
+  if (currentId()) paintSession(); else renderList();
+}
 function connect() {
   const es = new EventSource('/api/events?t=' + encodeURIComponent(token));
-  es.onmessage = e => { state = JSON.parse(e.data); $('conn').textContent = 'live'; render(); };
-  es.onerror = () => { $('conn').textContent = 'reconnecting'; es.close(); setTimeout(connect, 2000); };
+  es.onmessage = e => { $('conn').textContent = 'live'; apply(JSON.parse(e.data)); };
+  es.onerror = () => { $('conn').textContent = 'offline'; es.close(); setTimeout(connect, 2000); };
 }
-api('/api/state').then(s => { state = s; render(); connect(); })
-  .catch(e => { $('list').innerHTML = `<p class="err">${esc(e.message)} — open the link from the notification (it carries the token)</p>`; });
-if (location.hash.length > 1) setTimeout(() => open(decodeURIComponent(location.hash.slice(1))), 400);
+api('/api/state').then(s => { apply(s); route(); connect(); })
+  .catch(e => { $('rows').innerHTML = `<p class="err">${esc(e.message)} — open the link from the notification (it carries the token)</p>`; });
 </script>
 </body>
 </html>
