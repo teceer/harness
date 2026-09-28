@@ -44,6 +44,14 @@ func cmdUI(args []string) error {
 	if err != nil {
 		return err
 	}
+	// The remote control and its notifications live as long as the harness
+	// tmux server, not only while someone remembers to run `harness serve`.
+	if cfg.WebURL != "" || cfg.NotifyCommand != "" {
+		serve := fmt.Sprintf("while :; do %s serve; sleep 5; done", tmux.Quote(exe))
+		if err := tmux.EnsureServe(cfg.TmuxSession, serve, buildID()); err != nil {
+			fmt.Fprintln(os.Stderr, "harness: serve:", err)
+		}
+	}
 	if !iterm.Active() {
 		return tmux.Attach(pane)
 	}

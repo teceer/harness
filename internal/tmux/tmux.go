@@ -178,6 +178,7 @@ func attachCmd(pane string) (string, []string, []string, error) {
 
 const (
 	sidebarOpt = "@harness_sidebar"
+	serveOpt   = "@harness_serve"
 	buildOpt   = "@harness_build" // build of the binary the sidebar runs
 )
 
@@ -206,8 +207,11 @@ func MarkBuild(pane, build string) {
 }
 
 // Sidebar returns the pane running the sidebar, "" if there is none.
-func Sidebar() string {
-	out, err := run("list-panes", "-a", "-F", "#{pane_id} #{"+sidebarOpt+"} #{pane_dead}")
+func Sidebar() string { return paneWith(sidebarOpt) }
+
+// paneWith returns the live pane marked with opt, "" if there is none.
+func paneWith(opt string) string {
+	out, err := run("list-panes", "-a", "-F", "#{pane_id} #{"+opt+"} #{pane_dead}")
 	if err != nil {
 		return ""
 	}
@@ -246,6 +250,30 @@ func EnsureSidebar(session, command, exe, build string) (string, error) {
 		}
 	}
 	return pane, bindKeys(pane, exe)
+}
+
+// EnsureServe keeps the remote control (command) running in a background
+// window "serve" of session, next to the sidebar, and restarts it when it
+// runs an older build. The window list is hidden, so it never shows up.
+func EnsureServe(session, command, build string) error {
+	pane := paneWith(serveOpt)
+	if pane != "" {
+		if paneOption(pane, buildOpt) == build {
+			return nil
+		}
+		_, err := run("respawn-pane", "-k", "-t", pane, command)
+		if err == nil {
+			run("set-option", "-p", "-t", pane, buildOpt, build)
+		}
+		return err
+	}
+	pane, err := NewWindow(session, "serve", os.Getenv("HOME"), nil, command)
+	if err != nil {
+		return err
+	}
+	_, err = run("set-option", "-p", "-t", pane, serveOpt, "1", ";",
+		"set-option", "-p", "-t", pane, buildOpt, build)
+	return err
 }
 
 // Key sequences the harness iTerm2 profile sends for ⌘[ ⌘] ⌥⇥ ⌘⇧A ⌘⇧N and ⌥1…⌥9.
