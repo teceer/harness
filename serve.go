@@ -149,8 +149,13 @@ type webServer struct {
 // the finger, and slower otherwise.
 func (s *webServer) paneEvery(pane string) func() time.Duration {
 	return func() time.Duration {
-		if t, ok := s.lastInput.Load(pane); ok && time.Since(t.(time.Time)) < 3*time.Second {
-			return 120 * time.Millisecond
+		if t, ok := s.lastInput.Load(pane); ok {
+			switch since := time.Since(t.(time.Time)); {
+			case since < 1500*time.Millisecond: // mid-drag: small corrections
+				return 50 * time.Millisecond
+			case since < 3*time.Second:
+				return 120 * time.Millisecond
+			}
 		}
 		return 350 * time.Millisecond
 	}
