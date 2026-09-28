@@ -34,6 +34,8 @@ type Config struct {
 	TmuxSession  string `toml:"tmux_session"`
 	IdleArchive  string `toml:"idle_archive"`
 	SidebarWidth int    `toml:"sidebar_width"`
+	// ChangesWidth is the width of the git changes pane (⌘⇧G).
+	ChangesWidth int `toml:"changes_width"`
 	// NotifyCommand is run (via sh) when a session starts waiting for an
 	// answer or finishes a turn, with the text in $HARNESS_MESSAGE.
 	NotifyCommand string `toml:"notify_command"`
@@ -49,6 +51,7 @@ const defaultConfig = `# harness configuration
 tmux_session = "harness"
 idle_archive = "45m"                        # used by 'harness gc'
 sidebar_width = 42                          # columns of the 'harness ui' sidebar
+changes_width = 44                          # columns of the git changes pane (⌘⇧G)
 
 # Remote control (harness serve) and notifications. The command runs via sh
 # with the text in $HARNESS_MESSAGE; it fires when a session starts waiting
@@ -128,6 +131,9 @@ func Load(create bool) (*Config, error) {
 	}
 	if c.SidebarWidth < 20 {
 		c.SidebarWidth = 42
+	}
+	if c.ChangesWidth < 20 {
+		c.ChangesWidth = 44
 	}
 	if c.IdleArchive == "" {
 		c.IdleArchive = "45m"
