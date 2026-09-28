@@ -140,6 +140,20 @@ type webServer struct {
 	push     *pushTokens
 
 	readMu gosync.Mutex // guards read-state.json
+
+	lastInput gosync.Map // pane → time of the last remote input (see paneEvery)
+}
+
+// paneEvery is how often a pane is re-captured for a phone watching it:
+// fast right after remote input (scrolling, typing), so the screen follows
+// the finger, and slower otherwise.
+func (s *webServer) paneEvery(pane string) func() time.Duration {
+	return func() time.Duration {
+		if t, ok := s.lastInput.Load(pane); ok && time.Since(t.(time.Time)) < 3*time.Second {
+			return 120 * time.Millisecond
+		}
+		return 350 * time.Millisecond
+	}
 }
 
 func (s *webServer) routes(mux *http.ServeMux) {
@@ -151,6 +165,7 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/sessions/{id}/stream", s.auth(s.messageStream))
 	mux.Handle("GET /api/sessions/{id}/pane", s.auth(s.paneStream))
 	mux.Handle("GET /api/sessions/{id}/scrollback", s.auth(s.scrollback))
+	mux.Handle("POST /api/sessions/{id}/scroll", s.auth(s.scroll))
 	mux.Handle("POST /api/sessions/{id}/upload", s.auth(s.upload))
 	mux.Handle("POST /api/sessions/{id}/send", s.auth(s.send))
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
@@ -351,7 +366,7 @@ func (s *webServer) messageStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	s.stream(w, r, 400*time.Millisecond, func() (string, any) {
+	s.stream(w, r, func() time.Duration { return 400 * time.Millisecond }, func() (string, any) {
 		fi, err := os.Stat(se.TranscriptPath)
 		if err != nil {
 			return "", nil
@@ -379,7 +394,7 @@ func (s *webServer) paneStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// The page renders HTML; the native app draws styled segments itself.
 	spans := r.URL.Query().Get("format") == "spans"
-	s.stream(w, r, 350*time.Millisecond, func() (string, any) {
+	s.stream(w, r, s.paneEvery(se.TmuxPane), func() (string, any) {
 		raw, err := tmux.Capture(se.TmuxPane)
 		if err != nil {
 			return "", nil
@@ -390,6 +405,42 @@ func (s *webServer) paneStream(w http.ResponseWriter, r *http.Request) {
 		return raw, map[string]any{"html": ansi.HTML(raw)}
 	})
 }
+
+// scroll moves a full-screen session like the mouse wheel on the Mac, a
+// line at a time: {"lines": -3} scrolls back. Sessions with ordinary
+// scrollback are scrolled on the phone instead (see scrollback).
+func (s *webServer) scroll(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Lines int `json:"lines"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if se.TmuxPane == "" || !paneExists(se.TmuxPane) {
+		http.Error(w, "session is not running in harness", http.StatusConflict)
+		return
+	}
+	s.lastInput.Store(se.TmuxPane, time.Now())
+	ok, err := tmux.Wheel(se.TmuxPane, max(-maxWheel, min(body.Lines, maxWheel)))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "not a full-screen session with mouse scrolling", http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]string{"ok": "1"})
+}
+
+// maxWheel bounds one scroll request (wheel events sent at once).
+const maxWheel = 40
 
 // maxScrollback bounds the history a client can ask for at once.
 const maxScrollback = 5000
@@ -425,7 +476,7 @@ func (s *webServer) scrollback(w http.ResponseWriter, r *http.Request) {
 
 // stream sends payload over SSE whenever version changes; the version also
 // keeps us from re-sending an unchanged screen.
-func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every time.Duration, read func() (version string, payload any)) {
+func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every func() time.Duration, read func() (version string, payload any)) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, ok := w.(http.Flusher)
@@ -445,7 +496,7 @@ func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every time.Du
 		select {
 		case <-r.Context().Done():
 			return
-		case <-time.After(every):
+		case <-time.After(every()):
 		}
 	}
 }
@@ -472,6 +523,7 @@ func (s *webServer) send(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session is not running in harness", http.StatusConflict)
 		return
 	}
+	s.lastInput.Store(se.TmuxPane, time.Now())
 	if body.Key != "" {
 		if !allowedKeys[body.Key] {
 			http.Error(w, "key not allowed", http.StatusBadRequest)
