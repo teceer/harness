@@ -68,7 +68,25 @@ resumable sessions (archived, and ones that ended in the last day).
 | `⌘⇧N` | anywhere: new session — directory prompt in the sidebar with `Tab` completion (`Tab`/`↓` next, `⇧Tab`/`↑` previous; relative paths start at `~`); profile from the path |
 | `a` | archive (`a` twice / `A` when it is working) |
 | `e` | rename · `x` forget a stopped session · `.` all ended ones |
+| `⌘⇧G` | anywhere (`c` in the sidebar): open / close the git changes pane |
 | `q` | detach (everything keeps running) · `ctrl+c` quit the sidebar |
+
+### Changes pane
+
+`⌘⇧G` opens a third pane at the right edge: the git changes of the
+session shown next to the sidebar — branch with ahead/behind, then every
+changed file (staged, unstaged and untracked) with its status letter and
+`+added −deleted` lines against `HEAD`. It follows ⌘[ ⌘] as you switch
+sessions and refreshes whenever a hook reports activity (so right after
+Claude edits a file), or every few seconds for your own edits. `⏎` (or a
+second click) shows the file's diff in a popup over the session, through
+`delta` when it is installed, `less -R` otherwise; `c` closes the pane.
+
+Opening or closing it narrows or widens the shown session once; every
+background window is resized with it, so switching sessions still never
+reflows one. Its width is `changes_width` in `config.toml` (default 44).
+git runs with `GIT_OPTIONAL_LOCKS=0`, so the pane never takes the index
+lock a session's own `git commit` needs.
 
 ### ⌘ shortcuts
 
@@ -77,7 +95,7 @@ own pane switching. `harness` therefore writes an iTerm2 dynamic profile
 (`~/Library/Application Support/iTerm2/DynamicProfiles/harness.json`)
 named *Harness*: it inherits everything from the profile you started in
 (its key mappings included) and on top maps `⌘[` `⌘]` `⌥⇥` `⌘⇧A` `⌘⇧N`
-`⌥1`…`⌥9` to private escape sequences the harness tmux binds (`user-keys`).
+`⌘⇧G` `⌥1`…`⌥9` to private escape sequences the harness tmux binds (`user-keys`).
 The tab switches to that profile while attached and back when you detach,
 so every other iTerm2 tab behaves as before.
 

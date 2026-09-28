@@ -44,6 +44,9 @@ func cmdUI(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := tmux.RespawnChanges(changesLoop(exe), buildID()); err != nil {
+		fmt.Fprintln(os.Stderr, "harness: changes pane:", err)
+	}
 	// The remote control and its notifications live as long as the harness
 	// tmux server, not only while someone remembers to run `harness serve`.
 	if cfg.WebURL != "" || cfg.NotifyCommand != "" {
@@ -532,6 +535,15 @@ func (m *sidebar) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		if s, ok := m.selected(); ok {
 			m.startInput(modeRename, s.Name)
+		}
+	case "c": // same as ⌘⇧G
+		if m.self == "" {
+			return m, nil
+		}
+		cfg := m.cfg
+		return m, func() tea.Msg {
+			_, err := toggleChanges(cfg)
+			return opMsg{err: err}
 		}
 	}
 	return m, nil

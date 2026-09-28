@@ -105,15 +105,43 @@ func FitToSlot(pane string, sidebarWidth int) {
 	if sb == "" {
 		return
 	}
-	out, err := run("display-message", "-p", "-t", sb, "#{window_width} #{window_height}")
+	if _, w, h, err := slot(sb, sidebarWidth); err == nil {
+		run("resize-window", "-t", pane, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h))
+	}
+}
+
+// slot returns the column and width of the area where sessions show, right
+// of the sidebar, and the window height: the shown pane's when there is
+// one, otherwise what the sidebar and the changes pane leave free.
+func slot(sidebar string, sidebarWidth int) (left, width, height int, err error) {
+	infos, err := paneInfos()
 	if err != nil {
-		return
+		return 0, 0, 0, err
 	}
-	var w, h int
-	if _, err := fmt.Sscan(out, &w, &h); err != nil || w <= sidebarWidth+1 {
-		return
+	sb, ok := infos[sidebar]
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("sidebar pane %s is gone", sidebar)
 	}
-	run("resize-window", "-t", pane, "-x", strconv.Itoa(w-sidebarWidth-1), "-y", strconv.Itoa(h))
+	out, err := run("display-message", "-p", "-t", sidebar, "#{window_width} #{window_height}")
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	var ww, wh int
+	if _, err := fmt.Sscan(out, &ww, &wh); err != nil {
+		return 0, 0, 0, err
+	}
+	if shown := slotted(infos, sidebar); len(shown) == 1 {
+		in := infos[shown[0]]
+		return in.left, in.width, wh, nil
+	}
+	left, width = sidebarWidth+1, ww-sidebarWidth-1
+	if p := changesIn(infos, sb.window); p != "" {
+		width -= changesWidth(p, infos[p].width) + 1
+	}
+	if width < 20 {
+		return 0, 0, 0, fmt.Errorf("window too narrow (%d columns)", ww)
+	}
+	return left, width, wh, nil
 }
 
 func KillPane(pane string) error {
@@ -179,7 +207,11 @@ func attachCmd(pane string) (string, []string, []string, error) {
 const (
 	sidebarOpt = "@harness_sidebar"
 	serveOpt   = "@harness_serve"
+	changesOpt = "@harness_changes"
 	buildOpt   = "@harness_build" // build of the binary the sidebar runs
+	// changesWidthOpt keeps the width the changes pane was opened with, to
+	// restore it when the layout is rebuilt around it.
+	changesWidthOpt = "@harness_changes_width"
 )
 
 func paneOption(pane, opt string) string {
@@ -276,7 +308,7 @@ func EnsureServe(session, command, build string) error {
 	return err
 }
 
-// Key sequences the harness iTerm2 profile sends for ⌘[ ⌘] ⌥⇥ ⌘⇧A ⌘⇧N and ⌥1…⌥9.
+// Key sequences the harness iTerm2 profile sends for ⌘[ ⌘] ⌥⇥ ⌘⇧A ⌘⇧N ⌘⇧G and ⌥1…⌥9.
 // Cmd chords never reach a terminal program on their own; these private CSI
 // sequences are what iTerm2 is told to send instead (see internal/iterm).
 const (
@@ -285,6 +317,7 @@ const (
 	SeqToggle   = "\x1b[1002~"
 	SeqArchived = "\x1b[1003~"
 	SeqNew      = "\x1b[1004~"
+	SeqChanges  = "\x1b[1005~"
 )
 
 // Keys the sidebar receives for ⌘⇧A: pressed in the sidebar it toggles
@@ -301,7 +334,8 @@ func SeqNumber(n int) string { return fmt.Sprintf("\x1b[10%d~", 10+n) }
 
 // bindKeys: ⌥⇥ toggles between the sidebar and the session next to it,
 // ⌘[ / ⌘] show the previous / next harness session, ⌥n the n-th one,
-// ⌘⇧A toggles Sessions ⇄ Archived, ⌘⇧N starts a new session.
+// ⌘⇧A toggles Sessions ⇄ Archived, ⌘⇧N starts a new session, ⌘⇧G
+// opens / closes the changes pane.
 func bindKeys(sidebar, exe string) error {
 	seqs := []string{SeqPrev, SeqNext, SeqToggle}
 	back := fmt.Sprintf("select-window -t %s ; select-pane -t %s", sidebar, sidebar)
@@ -326,6 +360,10 @@ func bindKeys(sidebar, exe string) error {
 		"if-shell", "-F", "#{" + sidebarOpt + "}",
 		"send-keys -t " + sidebar + " " + TabToggleKey,
 		fmt.Sprintf("select-window -t %s ; select-pane -t %s ; send-keys -t %s %s", sidebar, sidebar, sidebar, TabArchivedKey)})
+
+	// ⌘⇧G: open / close the git changes pane.
+	seqs = append(seqs, SeqChanges)
+	binds = append(binds, []string{fmt.Sprintf("User%d", len(seqs)-1), "run-shell", "-b", Quote(exe) + " changes toggle"})
 
 	// bindings of earlier versions; missing ones are fine
 	run("unbind-key", "-n", "M-s")
@@ -377,26 +415,58 @@ func Focus(pane string) error {
 }
 
 type paneInfo struct {
-	window        string
-	width, height int
+	window              string
+	left, width, height int
+	changes             bool // the git changes pane
 }
 
 func paneInfos() (map[string]paneInfo, error) {
-	out, err := run("list-panes", "-a", "-F", "#{pane_id} #{window_id} #{pane_width} #{pane_height}")
+	out, err := run("list-panes", "-a", "-F",
+		"#{pane_id} #{window_id} #{pane_left} #{pane_width} #{pane_height} #{?#{"+changesOpt+"},1,0}")
 	if err != nil {
 		return nil, err
 	}
 	infos := map[string]paneInfo{}
 	for _, line := range strings.Split(out, "\n") {
 		f := strings.Fields(line)
-		if len(f) != 4 {
+		if len(f) != 6 {
 			continue
 		}
-		w, _ := strconv.Atoi(f[2])
-		h, _ := strconv.Atoi(f[3])
-		infos[f[0]] = paneInfo{window: f[1], width: w, height: h}
+		l, _ := strconv.Atoi(f[2])
+		w, _ := strconv.Atoi(f[3])
+		h, _ := strconv.Atoi(f[4])
+		infos[f[0]] = paneInfo{window: f[1], left: l, width: w, height: h, changes: f[5] == "1"}
 	}
 	return infos, nil
+}
+
+// slotted returns the session panes in the sidebar's window: everything
+// there but the sidebar and the changes pane (normally exactly one).
+func slotted(infos map[string]paneInfo, sidebar string) []string {
+	var shown []string
+	for p, in := range infos {
+		if in.window == infos[sidebar].window && p != sidebar && !in.changes {
+			shown = append(shown, p)
+		}
+	}
+	return shown
+}
+
+// changesIn returns the changes pane of window, "" if it is closed.
+func changesIn(infos map[string]paneInfo, window string) string {
+	for p, in := range infos {
+		if in.window == window && in.changes {
+			return p
+		}
+	}
+	return ""
+}
+
+func changesWidth(pane string, fallback int) int {
+	if n, err := strconv.Atoi(paneOption(pane, changesWidthOpt)); err == nil && n > 0 {
+		return n
+	}
+	return fallback
 }
 
 // batch runs several tmux commands in one invocation: the server applies
@@ -433,12 +503,7 @@ func Show(sidebar, target string, width int, nameOf func(pane string) string, fo
 	if !ok {
 		return fmt.Errorf("pane %s is gone", target)
 	}
-	var shown []string
-	for p, in := range infos {
-		if in.window == sb.window && p != sidebar {
-			shown = append(shown, p)
-		}
-	}
+	shown := slotted(infos, sidebar)
 
 	var cmds [][]string
 	switch {
@@ -455,10 +520,19 @@ func Show(sidebar, target string, width int, nameOf func(pane string) string, fo
 		for _, p := range shown {
 			cmds = append(cmds, []string{"break-pane", "-d", "-s", p, "-n", windowLabel(nameOf(p))})
 		}
-		cmds = append(cmds,
-			[]string{"join-pane", "-d", "-h", "-s", target, "-t", sidebar},
-			[]string{"resize-pane", "-t", sidebar, "-x", strconv.Itoa(width)},
-		)
+		if ch := changesIn(infos, sb.window); ch != "" {
+			// Slot in left of the changes pane, then restore both widths.
+			cmds = append(cmds,
+				[]string{"join-pane", "-d", "-h", "-b", "-s", target, "-t", ch},
+				[]string{"resize-pane", "-t", sidebar, "-x", strconv.Itoa(width)},
+				[]string{"resize-pane", "-t", ch, "-x", strconv.Itoa(changesWidth(ch, infos[ch].width))},
+			)
+		} else {
+			cmds = append(cmds,
+				[]string{"join-pane", "-d", "-h", "-s", target, "-t", sidebar},
+				[]string{"resize-pane", "-t", sidebar, "-x", strconv.Itoa(width)},
+			)
+		}
 	}
 	if focus {
 		cmds = append(cmds, []string{"select-pane", "-t", target})
@@ -478,45 +552,99 @@ func windowLabel(s string) string {
 
 // Shown returns the pane displayed next to the sidebar, "" if none.
 func Shown(sidebar string) string {
-	out, err := run("list-panes", "-t", sidebar, "-F", "#{pane_id}")
+	out, err := run("list-panes", "-t", sidebar, "-F", "#{pane_id} #{?#{"+changesOpt+"},1,0}")
 	if err != nil {
 		return ""
 	}
-	for _, p := range strings.Fields(out) {
-		if p != sidebar {
-			return p
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 2 && f[0] != sidebar && f[1] == "0" {
+			return f[0]
 		}
 	}
 	return ""
+}
+
+// Changes returns the git changes pane, "" when it is closed.
+func Changes() string { return paneWith(changesOpt) }
+
+// ToggleChanges opens the git changes pane (running command) width columns
+// wide at the right edge of the sidebar's window, or closes it. The shown
+// session reflows once; every background window is then fitted to the new
+// slot, so switching sessions still never resizes one.
+func ToggleChanges(sidebar string, sidebarWidth, width int, command string) (open bool, err error) {
+	if p := Changes(); p != "" {
+		if err := KillPane(p); err != nil {
+			return true, err
+		}
+		return false, fitBackground(sidebar, sidebarWidth)
+	}
+	target := Shown(sidebar)
+	if target == "" {
+		target = sidebar
+	}
+	pane, err := run("split-window", "-h", "-d", "-l", strconv.Itoa(width), "-t", target, "-P", "-F", "#{pane_id}", command)
+	if err != nil {
+		return false, err
+	}
+	err = batch(
+		[]string{"set-option", "-p", "-t", pane, changesOpt, "1"},
+		[]string{"set-option", "-p", "-t", pane, changesWidthOpt, strconv.Itoa(width)},
+	)
+	if err != nil {
+		return true, err
+	}
+	return true, fitBackground(sidebar, sidebarWidth)
+}
+
+// RespawnChanges restarts the changes pane in place when it runs an older
+// build than build (it marks its build itself, like the sidebar).
+func RespawnChanges(command, build string) error {
+	pane := Changes()
+	if pane == "" || paneOption(pane, buildOpt) == build {
+		return nil
+	}
+	_, err := run("respawn-pane", "-k", "-t", pane, command)
+	return err
+}
+
+// fitBackground sizes every other window of the sidebar's session like the
+// slot, as FitToSlot does for a new one.
+func fitBackground(sidebar string, sidebarWidth int) error {
+	_, w, h, err := slot(sidebar, sidebarWidth)
+	if err != nil {
+		return err
+	}
+	out, err := run("display-message", "-p", "-t", sidebar, "#{session_id} #{window_id}")
+	if err != nil {
+		return err
+	}
+	var session, own string
+	fmt.Sscan(out, &session, &own)
+	out, err = run("list-windows", "-t", session, "-F", "#{window_id}")
+	if err != nil {
+		return err
+	}
+	var cmds [][]string
+	for _, win := range strings.Fields(out) {
+		if win != own {
+			cmds = append(cmds, []string{"resize-window", "-t", win, "-x", strconv.Itoa(w), "-y", strconv.Itoa(h)})
+		}
+	}
+	return batch(cmds...)
 }
 
 // Popup runs command in a bordered popup laid exactly over the slot right
 // of the sidebar (or where it would be), and returns when it closes. The
 // popup takes the keyboard while it is open.
 func Popup(sidebar string, sidebarWidth int, title, command string) error {
-	infos, err := paneInfos()
-	if err != nil {
-		return err
-	}
-	sb, ok := infos[sidebar]
-	if !ok {
-		return fmt.Errorf("sidebar pane %s is gone", sidebar)
-	}
-	out, err := run("display-message", "-p", "-t", sidebar, "#{window_width} #{window_height}")
-	if err != nil {
-		return err
-	}
-	var ww, wh int
-	fmt.Sscan(out, &ww, &wh)
-	left, width := sidebarWidth+1, ww-sidebarWidth-1
-	for p, in := range infos { // the pane currently shown, if any, sets the slot
-		if in.window == sb.window && p != sidebar {
-			width = in.width
-			left = ww - in.width
+	left, width, wh, err := slot(sidebar, sidebarWidth)
+	if err != nil || width < 20 {
+		out, derr := run("display-message", "-p", "-t", sidebar, "#{window_width} #{window_height}")
+		if derr != nil {
+			return derr
 		}
-	}
-	if width < 20 {
-		left, width = 0, ww
+		fmt.Sscan(out, &width, &wh)
+		left = 0
 	}
 	_, err = run("display-popup", "-E", "-T", " "+title+" ", "-S", "fg=#7AA2FF", "-t", sidebar,
 		"-x", strconv.Itoa(left), "-y", strconv.Itoa(wh), "-w", strconv.Itoa(width), "-h", strconv.Itoa(wh), command)
@@ -557,7 +685,7 @@ set -g status-style "bg=default,fg=#7C849C"
 set -g status-left ""
 set -g window-status-format ""
 set -g window-status-current-format ""
-set -g status-right " ⌥⇥ sidebar ⇄ session · ⌘[ ⌘] ⌥1-9 switch · C-b d detach "
+set -g status-right " ⌥⇥ sidebar ⇄ session · ⌘[ ⌘] ⌥1-9 switch · ⌘⇧G changes · C-b d detach "
 set -g pane-border-style "fg=#3A4160"
 set -g pane-active-border-style "fg=#7AA2FF"
 if-shell "test -f ` + Quote(local) + `" "source-file ` + Quote(local) + `"
