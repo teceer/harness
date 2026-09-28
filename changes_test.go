@@ -3,6 +3,8 @@ package main
 import (
 	"reflect"
 	"testing"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestParseStatus(t *testing.T) {
@@ -74,5 +76,77 @@ func TestTruncateLeft(t *testing.T) {
 	}
 	if got := truncateLeft("web", 6); got != "web" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestParseNameStatus(t *testing.T) {
+	out := "M\x00ui.go\x00R087\x00old.go\x00new.go\x00A\x00added.go\x00D\x00gone.go\x00"
+	var got []string
+	for _, f := range parseNameStatus([]byte(out)) {
+		got = append(got, f.code+f.path)
+	}
+	want := []string{"M ui.go", "R new.go", "A added.go", "D gone.go"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestParseDiff(t *testing.T) {
+	out := `diff --git a/x.go b/x.go
+index 1..2 100644
+--- a/x.go
++++ b/x.go
+@@ -10,4 +10,5 @@ func main() {
+ 	a := 1
+-	b := compute(a)
++	b := computeFast(a)
++	c := 3
+ 	return
+\ No newline at end of file
+`
+	d := parseDiff(out)
+	var kinds []byte
+	for _, l := range d.lines {
+		kinds = append(kinds, l.kind)
+	}
+	if string(kinds) != "@ -++ \\" {
+		t.Fatalf("kinds = %q", kinds)
+	}
+	if h := d.lines[0]; h.old != 10 || h.new != 10 || h.text != "func main() {" {
+		t.Errorf("hunk = %+v", h)
+	}
+	if l := d.lines[4]; l.new != 12 || l.old != 0 {
+		t.Errorf("added line numbers = %d/%d", l.old, l.new)
+	}
+	if l := d.lines[5]; l.old != 12 || l.new != 13 || l.text != "    return" {
+		t.Errorf("context line = %+v", l)
+	}
+	// compute → computeFast is marked as a whole word on both sides
+	del, add := d.lines[2], d.lines[3]
+	if got := string([]rune(del.text)[del.word[0]:del.word[1]]); got != "compute" {
+		t.Errorf("removed word = %q", got)
+	}
+	if got := string([]rune(add.text)[add.word[0]:add.word[1]]); got != "computeFast" {
+		t.Errorf("added word = %q", got)
+	}
+}
+
+func TestWordRangesSkipsRewrites(t *testing.T) {
+	a, b := wordRanges("completely different", "nothing alike here")
+	if a != ([2]int{}) || b != ([2]int{}) {
+		t.Errorf("rewrite marked: %v %v", a, b)
+	}
+}
+
+func TestBarBlocks(t *testing.T) {
+	for _, c := range []struct{ add, del, g, r int }{
+		{10, 0, 5, 0}, {0, 10, 0, 5}, {5, 5, 3, 2}, {1, 0, 1, 0}, {1, 1, 1, 1}, {100, 1, 4, 1}, {0, 0, 0, 0},
+	} {
+		if g, r := barBlocks(c.add, c.del); g != c.g || r != c.r {
+			t.Errorf("barBlocks(%d, %d) = %d, %d; want %d, %d", c.add, c.del, g, r, c.g, c.r)
+		}
+		if n := len([]rune(ansi.Strip(statBar(c.add, c.del)))); n != 5 {
+			t.Errorf("statBar(%d, %d) is %d wide", c.add, c.del, n)
+		}
 	}
 }

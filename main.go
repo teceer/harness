@@ -63,6 +63,8 @@ func main() {
 		err = cmdNotify(args)
 	case "changes":
 		err = cmdChanges(args)
+	case "diff":
+		err = cmdDiff(args)
 	case "preview":
 		err = cmdPreview(args)
 	case "ls", "list":

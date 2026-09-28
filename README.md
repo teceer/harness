@@ -58,7 +58,7 @@ resumable sessions (archived, and ones that ended in the last day).
 |---|---|
 | `⌥1` … `⌥9` | anywhere: show active session number n (numbers in the sidebar) |
 | `⌘[` / `⌘]` | anywhere: show the previous / next active session |
-| `⌥⇥` | anywhere: toggle between the sidebar and the session |
+| `⌥⇥` | anywhere: next pane — sidebar → session → changes pane (when open) |
 | `⌘⇧A` | in the sidebar: toggle Sessions ⇄ Archived; in a session: jump to the sidebar's Archived tab |
 | `⏎` | show the session on the right and focus it (resumes a stopped one; for a session in a plain terminal tab asks `[Y/n]` to move it here, ⏎ confirms) |
 | `space` | **hold** to peek at the selected session's recent conversation, in either tab (popup over the right pane, closes when you let go; nothing is resumed or switched). While holding, `↑` `↓` (or `k` `j`) peek at the neighbouring sessions and the sidebar selection follows |
@@ -68,25 +68,52 @@ resumable sessions (archived, and ones that ended in the last day).
 | `⌘⇧N` | anywhere: new session — directory prompt in the sidebar with `Tab` completion (`Tab`/`↓` next, `⇧Tab`/`↑` previous; relative paths start at `~`); profile from the path |
 | `a` | archive (`a` twice / `A` when it is working) |
 | `e` | rename · `x` forget a stopped session · `.` all ended ones |
-| `⌘⇧G` | anywhere (`c` in the sidebar): open / close the git changes pane |
+| `⌘⇧G` | anywhere (`c` in the sidebar): open / close the [changes pane](#changes-pane) |
 | `q` | detach (everything keeps running) · `ctrl+c` quit the sidebar |
 
 ### Changes pane
 
 `⌘⇧G` opens a third pane at the right edge: the git changes of the
-session shown next to the sidebar — branch with ahead/behind, then every
-changed file (staged, unstaged and untracked) with its status letter and
-`+added −deleted` lines against `HEAD`. It follows ⌘[ ⌘] as you switch
+session shown next to the sidebar. It follows ⌘[ ⌘] as you switch
 sessions and refreshes whenever a hook reports activity (so right after
-Claude edits a file), or every few seconds for your own edits. `⏎` (or a
-second click) shows the file's diff in a popup over the session, through
-`delta` when it is installed, `less -R` otherwise; `c` closes the pane.
+Claude edits a file), or every few seconds for your own edits.
 
-Opening or closing it narrows or widens the shown session once; every
-background window is resized with it, so switching sessions still never
-reflows one. Its width is `changes_width` in `config.toml` (default 44).
-git runs with `GIT_OPTIONAL_LOCKS=0`, so the pane never takes the index
-lock a session's own `git commit` needs.
+```
+ CHANGES ───────────── uncommitted
+ api
+ ⎇ feature/login ↑2
+ 4 files  +182 −31  ▪▪▪▪▪
+
+▌ M README.md •             +4 −1
+ ▾ internal/auth/
+    M session.go •       +120 −28
+    ? token.go •              +54
+ ▾ web/
+    D old.js                   −2
+```
+
+Files are grouped by directory with a status letter, `+added −deleted`
+lines and a five-block change bar; `•` marks a file edited in the last two
+minutes. `s` lists them newest edit first instead, with their age — what
+Claude just touched is on top. `b` switches the scope from *uncommitted*
+(against `HEAD`) to *the whole branch*: everything since it left
+`origin/HEAD` (or `main` / `master`), committed or not, with the number of
+commits.
+
+| key | in the changes pane |
+|---|---|
+| `⏎` / click twice | diff viewer over the session: line numbers, syntax colours, changed words highlighted; `↑↓` `space` `d` `u` scroll, `n` `N` next / previous hunk, `←` `→` other files, `w` wrap, `x` more context, `q` close |
+| `space` | **hold** to peek at the file's diff (closes when you let go, `↑` `↓` walk the files) |
+| `e` | open the file in `$VISUAL` / `$EDITOR` in a popup |
+| `y` | copy the file's path |
+| `esc` | back into the session · `c` close the pane · `r` refresh |
+
+`⌥⇥` cycles sidebar → session → changes pane. Opening or closing the pane
+narrows or widens the shown session once; every background window is
+resized with it, so switching sessions still never reflows one. Its width
+is `changes_width` in `config.toml` (default 44). git runs with
+`GIT_OPTIONAL_LOCKS=0`, so the pane never takes the index lock a session's
+own `git commit` needs.
 
 ### ⌘ shortcuts
 
