@@ -57,17 +57,39 @@
   #pane{flex:1;overflow:auto;margin:0;padding:10px 12px;background:#12131c;
     font:11px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;
     -webkit-overflow-scrolling:touch;color:var(--text)}
-  .msg{margin-bottom:14px;white-space:pre-wrap;word-break:break-word}
-  .who{font-size:12px;font-weight:700;margin-bottom:2px}
+  .msg{margin-top:10px;word-break:break-word;line-height:1.4}
+  .msg.cont{margin-top:4px}
+  .inner>.msg:first-child{margin-top:0}
+  .who{font-size:12px;font-weight:700;margin-bottom:1px}
   .who.you{color:var(--accent)} .who.claude{color:#c792ea}
-  .msg .body{color:var(--sub)}
+  .msg .body{color:var(--sub);white-space:pre-wrap}
+  .msg .md{white-space:normal}
+  .md>:first-child{margin-top:0} .md>:last-child{margin-bottom:0}
+  .md p,.md ul,.md ol,.md pre,.md blockquote,.md table{margin:0 0 5px}
+  .md h1,.md h2,.md h3,.md h4,.md h5,.md h6{color:var(--text);margin:8px 0 3px;line-height:1.3}
+  .md h1{font-size:18px} .md h2{font-size:17px} .md h3{font-size:16px}
+  .md h4,.md h5,.md h6{font-size:15px}
+  .md strong{color:var(--text)}
+  .md ul,.md ol{padding-left:20px} .md li{margin:1px 0} .md li>ul,.md li>ol{margin:1px 0}
+  .md a{color:var(--accent)}
+  .md code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);
+    border:1px solid var(--line);border-radius:5px;padding:0 4px}
+  .md pre{background:#12131c;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+    overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:pre}
+  .md pre code{background:none;border:0;padding:0;font-size:12px}
+  .md blockquote{border-left:3px solid var(--line);padding-left:10px;color:var(--muted)}
+  .md hr{border:0;border-top:1px solid var(--line);margin:6px 0}
+  .md .table{overflow-x:auto;margin:0 0 5px}
+  .md table{border-collapse:collapse;font-size:13px}
+  .md th,.md td{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
+  .md th{color:var(--text);background:var(--card)}
   .msg.you .body{color:var(--text)}
   footer{border-top:1px solid var(--line);padding:10px 12px}
   footer .inner{display:flex;flex-direction:column;gap:8px}
   .keys{display:flex;gap:6px;flex-wrap:wrap}
   .keys button{padding:6px 10px;min-height:34px;font-size:13px}
   textarea{width:100%;background:var(--card);color:var(--text);border:1px solid var(--line);
-    border-radius:10px;padding:10px;font:inherit;resize:none;min-height:44px;max-height:40vh}
+    border-radius:10px;padding:10px;font:inherit;font-size:16px;resize:none;min-height:44px;max-height:40vh}
   .send{display:flex;gap:8px;align-items:flex-end}
   .note{color:var(--muted);font-size:12px;padding:0 4px}
   .err{color:var(--waiting);font-size:13px;padding:8px 4px}
@@ -75,7 +97,7 @@
     width:min(760px,96vw);padding:16px}
   dialog::backdrop{background:#000a}
   input[type=text]{width:100%;background:var(--card);color:var(--text);border:1px solid var(--line);
-    border-radius:10px;padding:10px;font:inherit;margin:10px 0}
+    border-radius:10px;padding:10px;font:inherit;font-size:16px;margin:10px 0}
 </style>
 </head>
 <body>
@@ -142,7 +164,7 @@ function profileColor(name) {
 async function api(path, opts = {}) {
   const res = await fetch(path, {...opts, headers:{...(opts.headers||{}), 'Authorization':'Bearer '+token,
     'Content-Type':'application/json'}});
-  if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+  if (!res.ok) throw Object.assign(new Error((await res.text()).trim() || res.statusText), {status: res.status});
   return res.status === 204 ? null : res.json();
 }
 
@@ -285,15 +307,112 @@ function paintSession() {
   $('note').textContent = s.running ? s.dir : (s.resumable ? 'stopped — resume to answer' : s.dir);
 }
 
+// md renders Claude's markdown. Everything is escaped before any tag is
+// added and links are http(s) only: the transcript carries tool output and
+// web content, and this page holds a token that can type into sessions.
+const listRe = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/;
+const fenceRe = /^\s*(```|~~~)/;
+const ruleRe = /^\s*([-*_])(\s*\1){2,}\s*$/;
+const sepRe = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+const blockStart = l => fenceRe.test(l) || /^#{1,6}\s/.test(l) || /^\s*>/.test(l) || listRe.test(l) || ruleRe.test(l);
+
+function md(src) {
+  const lines = (src || '').replace(/\r/g, '').split('\n'), out = [];
+  for (let i = 0; i < lines.length;) {
+    const l = lines[i];
+    let m;
+    if (!l.trim()) { i++; continue; }
+    if ((m = l.match(fenceRe))) {
+      const code = [];
+      for (i++; i < lines.length && !lines[i].trim().startsWith(m[1]); i++) code.push(lines[i]);
+      i++;
+      out.push(`<pre><code>${esc(code.join('\n'))}</code></pre>`);
+    } else if ((m = l.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/))) {
+      out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); i++;
+    } else if (ruleRe.test(l)) {
+      out.push('<hr>'); i++;
+    } else if (/^\s*>/.test(l)) {
+      const q = [];
+      for (; i < lines.length && /^\s*>/.test(lines[i]); i++) q.push(lines[i].replace(/^\s*>\s?/, ''));
+      out.push(`<blockquote>${md(q.join('\n'))}</blockquote>`);
+    } else if (l.includes('|') && sepRe.test(lines[i + 1] || '')) {
+      const cells = r => r.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map(c => inline(c.trim()));
+      const head = cells(l).map(c => `<th>${c}</th>`).join('');
+      const rows = [];
+      for (i += 2; i < lines.length && lines[i].includes('|') && lines[i].trim(); i++)
+        rows.push('<tr>' + cells(lines[i]).map(c => `<td>${c}</td>`).join('') + '</tr>');
+      out.push(`<div class="table"><table><thead><tr>${head}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`);
+    } else if (listRe.test(l)) {
+      const items = [];
+      for (; i < lines.length; i++) {
+        const t = lines[i];
+        if ((m = t.match(listRe)) && items.length && m[1].length <= items[0].indent &&
+            /\d/.test(m[2]) !== items[0].ordered) break; // a new list of the other kind
+        if (m) items.push({indent: m[1].length, ordered: /\d/.test(m[2]), n: parseInt(m[2]), text: m[3]});
+        else if (t.trim() && /^\s/.test(t) && !fenceRe.test(t)) items[items.length - 1].text += '\n' + t.trim();
+        else if (!t.trim() && listRe.test(lines[i + 1] || '')) continue;
+        else break;
+      }
+      out.push(mdList(items));
+    } else {
+      const para = [];
+      for (; i < lines.length && lines[i].trim() && !(para.length && blockStart(lines[i])); i++) para.push(lines[i]);
+      out.push(`<p>${para.map(inline).join('<br>')}</p>`);
+    }
+  }
+  return out.join('');
+}
+
+function mdList(items) {
+  let html = '';
+  const stack = [];
+  for (const it of items) {
+    while (stack.length > 1 && it.indent < stack[stack.length - 1].indent) html += `</li></${stack.pop().tag}>`;
+    const top = stack[stack.length - 1];
+    if (!top || it.indent > top.indent) {
+      const tag = it.ordered ? 'ol' : 'ul';
+      stack.push({indent: it.indent, tag});
+      html += it.ordered && it.n !== 1 ? `<ol start="${it.n}">` : `<${tag}>`;
+    } else html += '</li>';
+    const text = it.text.replace(/^\[([ xX])\]\s+/, (_, x) => x === ' ' ? '☐ ' : '☑ ');
+    html += '<li>' + text.split('\n').map(inline).join('<br>');
+  }
+  while (stack.length) html += `</li></${stack.pop().tag}>`;
+  return html;
+}
+
+function inline(s) {
+  const keep = [];
+  const hold = h => { keep.push(h); return `\u0000${keep.length - 1}\u0000`; };
+  s = s.replace(/\u0000/g, '')
+    .replace(/(`+)([^`]|[^`].*?[^`])\1(?!`)/g, (_, _t, c) => hold(`<code>${esc(c.trim())}</code>`))
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_, t, u) =>
+      hold(`<a href="${esc(u)}" target="_blank" rel="noopener">${inline(t)}</a>`))
+    .replace(/https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g, u =>
+      hold(`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`));
+  s = esc(s)
+    .replace(/\*\*(\S(?:.*?\S)??)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^\w])__(\S(?:.*?\S)??)__(?!\w)/g, '$1<strong>$2</strong>')
+    .replace(/(^|[^*\w])\*([^\s*](?:.*?[^\s*])??)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/(^|[^\w])_(\S(?:.*?\S)??)_(?!\w)/g, '$1<em>$2</em>')
+    .replace(/~~(\S(?:.*?\S)??)~~/g, '<del>$1</del>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, n) => keep[n]);
+}
+
 function renderMessages(msgs) {
   const atBottom = $('msgs').scrollTop + $('msgs').clientHeight > $('msgs').scrollHeight - 80;
+  // Claude Code writes a turn as several blocks: a run from the same side
+  // is labelled once and kept close together.
+  let prev = '';
   const body = (msgs || []).map(m => {
     const who = m.Role === 'user' ? 'you' : 'claude';
     const pics = (m.Images || []).map(i =>
       `<img class="shot" src="data:${esc(i.MediaType)};base64,${esc(i.Data)}" alt="">`).join('');
-    return `<div class="msg ${m.Role === 'user' ? 'you' : ''}">
-        <div class="who ${who}">${who}</div>
-        <div class="body">${esc(m.Text)}</div>${pics}</div>`;
+    const label = who === prev ? '' : `<div class="who ${who}">${who}</div>`;
+    const text = who === 'claude' ? md(m.Text) : esc((m.Text || '').trim());
+    const cls = [who === 'you' ? 'you' : '', label ? '' : 'cont'].join(' ');
+    prev = who;
+    return `<div class="msg ${cls}">${label}<div class="body${who === 'claude' ? ' md' : ''}">${text}</div>${pics}</div>`;
   }).join('') || '<p class="note">no messages yet</p>';
   $('msgs').innerHTML = `<div class="inner">${body}</div>`;
   if (atBottom) $('msgs').scrollTop = $('msgs').scrollHeight;
@@ -360,8 +479,24 @@ function connect() {
   es.onmessage = e => { $('conn').textContent = 'live'; apply(JSON.parse(e.data)); };
   es.onerror = () => { $('conn').textContent = 'offline'; es.close(); setTimeout(connect, 2000); };
 }
-api('/api/state').then(s => { apply(s); route(); connect(); })
-  .catch(e => { $('rows').innerHTML = `<p class="err">${esc(e.message)} — open the link from the notification (it carries the token)</p>`; });
+// A home-screen app keeps its own storage, apart from Safari's, and opens
+// without ?t=: ask for the token instead of leaving it locked out.
+function askToken(message) {
+  $('rows').innerHTML = `<p class="err">${esc(message)}</p>
+    <p class="note">Open the link from a notification, or paste the token (~/.harness/web-token):</p>
+    <input type="text" id="tok" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="token">
+    <button class="primary" id="tokSave">save</button>`;
+  $('tokSave').onclick = () => {
+    const t = $('tok').value.trim();
+    if (!t) return;
+    localStorage.setItem('harness-token', t);
+    location.replace(location.pathname + '?t=' + encodeURIComponent(t));
+  };
+}
+if (!token) askToken('no token');
+else api('/api/state').then(s => { apply(s); route(); connect(); })
+  .catch(e => e.status === 401 ? askToken('the token was not accepted')
+    : ($('rows').innerHTML = `<p class="err">${esc(e.message)}</p>`));
 </script>
 </body>
 </html>
