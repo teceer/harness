@@ -118,6 +118,9 @@ func TestWebSendGuards(t *testing.T) {
 			t.Errorf("%s: status %d, want %d", tc.name, got, tc.want)
 		}
 	}
+	if got := do(mux, "GET", "/api/sessions/sess-1/scrollback", "secret-token", "").Code; got != http.StatusConflict {
+		t.Errorf("scrollback outside harness: status %d", got)
+	}
 	if got := do(mux, "POST", "/api/new", "secret-token", `{"dir":"/nope/nope"}`).Code; got != http.StatusBadRequest {
 		t.Errorf("new in a missing directory: status %d", got)
 	}

@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	gosync "sync"
 	"syscall"
@@ -147,6 +148,7 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/sessions/{id}/messages", s.auth(s.messages))
 	mux.Handle("GET /api/sessions/{id}/stream", s.auth(s.messageStream))
 	mux.Handle("GET /api/sessions/{id}/pane", s.auth(s.paneStream))
+	mux.Handle("GET /api/sessions/{id}/scrollback", s.auth(s.scrollback))
 	mux.Handle("POST /api/sessions/{id}/upload", s.auth(s.upload))
 	mux.Handle("POST /api/sessions/{id}/send", s.auth(s.send))
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
@@ -376,6 +378,38 @@ func (s *webServer) paneStream(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// maxScrollback bounds the history a client can ask for at once.
+const maxScrollback = 5000
+
+// scrollback returns the pane's history above the visible screen, once:
+// the live stream stays small (the screen only) and a phone fetches what
+// is above it when scrolled to the top. ?lines=N (default 500).
+func (s *webServer) scrollback(w http.ResponseWriter, r *http.Request) {
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if se.TmuxPane == "" || !paneExists(se.TmuxPane) {
+		http.Error(w, "session is not running in harness", http.StatusConflict)
+		return
+	}
+	lines, err := strconv.Atoi(r.URL.Query().Get("lines"))
+	if err != nil || lines <= 0 {
+		lines = 500
+	}
+	raw, alt, err := tmux.Scrollback(se.TmuxPane, min(lines, maxScrollback))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := ansi.Lines(raw)
+	if raw == "" {
+		out = [][]ansi.Seg{}
+	}
+	writeJSON(w, map[string]any{"lines": out, "alt": alt})
+}
+
 // stream sends payload over SSE whenever version changes; the version also
 // keeps us from re-sending an unchanged screen.
 func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every time.Duration, read func() (version string, payload any)) {
@@ -447,6 +481,7 @@ func (s *webServer) send(w http.ResponseWriter, r *http.Request) {
 var allowedKeys = map[string]bool{
 	"Enter": true, "Escape": true, "1": true, "2": true, "3": true,
 	"y": true, "n": true, "Up": true, "Down": true, "Tab": true,
+	"PageUp": true, "PageDown": true, // scroll a full-screen session
 }
 
 func (s *webServer) archiveSession(w http.ResponseWriter, r *http.Request) {
