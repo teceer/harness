@@ -138,6 +138,8 @@ type webServer struct {
 
 	pushOnce gosync.Once
 	push     *pushTokens
+
+	readMu gosync.Mutex // guards read-state.json
 }
 
 func (s *webServer) routes(mux *http.ServeMux) {
@@ -154,6 +156,8 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
 	mux.Handle("POST /api/sessions/{id}/resume", s.auth(s.resume))
 	mux.Handle("POST /api/new", s.auth(s.newSession))
+	mux.Handle("POST /api/sessions/{id}/read", s.auth(s.markRead(false)))
+	mux.Handle("POST /api/sessions/{id}/unread", s.auth(s.markRead(true)))
 	mux.Handle("POST /api/push/register", s.auth(s.pushRegister))
 	mux.Handle("POST /api/push/unregister", s.auth(s.pushUnregister))
 }
@@ -201,12 +205,14 @@ type webSession struct {
 	Shown     bool   `json:"shown"`
 	Running   bool   `json:"running"` // has a live harness pane to type into
 	Resumable bool   `json:"resumable"`
+	Unread    bool   `json:"unread"` // news since you last opened it (see read.go)
 }
 
 type webState struct {
 	Sessions []webSession `json:"sessions"`
 	Dirs     []string     `json:"dirs"`     // known project directories, for a new session
 	Profiles []webProfile `json:"profiles"` // display order, "other" last
+	Unread   int          `json:"unread"`   // live sessions with news, for the icon badge
 }
 
 type webProfile struct {
@@ -248,6 +254,9 @@ func (s *webServer) snapshot() (webState, error) {
 		shown = tmux.Shown(sb)
 	}
 	panes := tmux.Panes()
+	s.readMu.Lock()
+	rs := s.loadRead()
+	s.readMu.Unlock()
 
 	out := webState{Profiles: s.profiles()}
 	seen := map[string]bool{}
@@ -261,7 +270,11 @@ func (s *webServer) snapshot() (webState, error) {
 					Age: ago(x.StatusSince), Section: sec.title, Number: numbers[x.ID],
 					Shown: x.TmuxPane != "" && x.TmuxPane == shown, Running: live,
 					Resumable: !x.Live() && hasTranscript(x),
+					Unread:    rs.unread(x),
 				})
+				if x.Live() && rs.unread(x) {
+					out.Unread++
+				}
 			}
 		}
 		for _, x := range all { // directories of every session, newest first

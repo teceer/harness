@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -140,24 +141,42 @@ type expoMessage struct {
 	Priority   string            `json:"priority"`
 	CategoryID string            `json:"categoryId,omitempty"`
 	ThreadID   string            `json:"threadId,omitempty"` // groups a session's notifications
+	Badge      *int              `json:"badge,omitempty"`    // unread sessions on the app icon
 	Data       map[string]string `json:"data"`
 }
 
-// sendPush delivers one notification to every registered device and drops
-// the ones Expo reports as gone (app deleted, push turned off).
+// sendPush delivers a session event to every registered device (errors
+// are only logged: the watcher keeps going).
 func (s *webServer) sendPush(se store.Session, title, body string) {
+	if err := s.deliverPush(se, title, body); err != nil && !errors.Is(err, errNoDevices) {
+		log.Printf("push: %v", err)
+	}
+}
+
+var errNoDevices = errors.New("no device registered for push")
+
+// deliverPush sends one notification to every registered device and drops
+// the ones Expo reports as gone (app deleted, push turned off). se may be
+// empty (a message from an agent outside harness): no link then.
+func (s *webServer) deliverPush(se store.Session, title, body string) error {
 	tokens := s.pushStore().list()
 	if len(tokens) == 0 {
-		return
+		return errNoDevices
 	}
 	category := ""
 	if se.Status == store.Waiting && se.TmuxPane != "" {
 		category = "waiting" // the app offers Enter / 1 / 2 / Esc on it
 	}
+	data := map[string]string{"status": se.Status}
+	thread := "harness"
+	if se.ID != "" {
+		data["sessionId"], thread = se.ID, se.ID
+	}
+	badge := s.unreadCount()
 	msgs := make([]expoMessage, len(tokens))
 	for i, t := range tokens {
 		msgs[i] = expoMessage{To: t, Title: title, Body: trim(body, 300), Sound: "default", Priority: "high",
-			CategoryID: category, ThreadID: se.ID, Data: map[string]string{"sessionId": se.ID, "status": se.Status}}
+			CategoryID: category, ThreadID: thread, Badge: &badge, Data: data}
 	}
 	payload, _ := json.Marshal(msgs)
 	req, _ := http.NewRequest(http.MethodPost, expoPushURL, bytes.NewReader(payload))
@@ -165,8 +184,7 @@ func (s *webServer) sendPush(se store.Session, title, body string) {
 	req.Header.Set("Accept", "application/json")
 	res, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 	if err != nil {
-		log.Printf("push: %v", err)
-		return
+		return err
 	}
 	defer res.Body.Close()
 	var out struct {
@@ -179,19 +197,24 @@ func (s *webServer) sendPush(se store.Session, title, body string) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil || res.StatusCode != http.StatusOK {
-		log.Printf("push: expo answered %s", res.Status)
-		return
+		return fmt.Errorf("expo answered %s", res.Status)
 	}
 	// Tickets come back in the order of the messages.
+	failed := 0
 	for i, t := range out.Data {
 		if t.Status != "error" || i >= len(tokens) {
 			continue
 		}
+		failed++
 		log.Printf("push: %s", cmp(t.Message, t.Details.Error))
 		if t.Details.Error == "DeviceNotRegistered" {
 			s.pushStore().remove(tokens[i])
 		}
 	}
+	if failed == len(tokens) {
+		return errors.New("no device accepted the notification")
+	}
+	return nil
 }
 
 func pushSummary(n int) string {

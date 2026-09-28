@@ -21,6 +21,8 @@ const usage = `harness — Claude Code session control
                                      start claude in a tmux window
   harness switch prev|next|1…9       show another session (⌘[ ⌘] ⌥1…⌥9)
   harness serve [--port 7777]        remote control over Tailscale
+  harness notify [-t title] [-s id] message
+                                     push to the harness app (agents' updates)
   harness changes [toggle]           git changes pane (⌘⇧G opens / closes it)
   harness preview <id>               print a session's recent conversation
   harness attach <id>                focus a session's tmux pane
@@ -57,6 +59,8 @@ func main() {
 		err = cmdSwitch(args)
 	case "serve":
 		err = cmdServe(args)
+	case "notify":
+		err = cmdNotify(args)
 	case "changes":
 		err = cmdChanges(args)
 	case "preview":

@@ -208,3 +208,47 @@ func TestPushRegisterAndSend(t *testing.T) {
 		t.Fatalf("tokens after unregister: %v", left)
 	}
 }
+
+func TestUnread(t *testing.T) {
+	srv, mux := testServer(t)
+	state := func() webState {
+		var st webState
+		json.Unmarshal(do(mux, "GET", "/api/state", "secret-token", "").Body.Bytes(), &st)
+		return st
+	}
+	// Finished before tracking started: read.
+	if st := state(); st.Sessions[0].Unread {
+		t.Fatal("an old finish must not count as unread")
+	}
+
+	// A turn finishes after that: unread until the session is opened.
+	later := time.Now().Add(2 * time.Second)
+	se, _ := srv.st.Find("sess-1")
+	se.Status, se.StatusSince = store.Idle, later
+	srv.st.Tx(func(tx *store.Tx) error { return tx.Put(se) })
+	if st := state(); !st.Sessions[0].Unread {
+		t.Fatalf("a new finish must be unread: %+v", st.Sessions[0])
+	}
+	srv.readMu.Lock()
+	rs := srv.loadRead()
+	rs.Seen["sess-1"] = later.Add(time.Second) // opened after it finished
+	srv.saveRead(rs)
+	srv.readMu.Unlock()
+	if st := state(); st.Sessions[0].Unread {
+		t.Fatal("opened: must be read")
+	}
+
+	// Marked by hand, then opened again.
+	if w := do(mux, "POST", "/api/sessions/sess-1/unread", "secret-token", ""); w.Code != http.StatusOK {
+		t.Fatalf("unread: %d", w.Code)
+	}
+	if st := state(); !st.Sessions[0].Unread {
+		t.Fatal("marked unread must show as unread")
+	}
+	if w := do(mux, "POST", "/api/sessions/sess-1/read", "secret-token", ""); w.Code != http.StatusOK {
+		t.Fatalf("read: %d", w.Code)
+	}
+	if st := state(); st.Sessions[0].Unread {
+		t.Fatal("read must clear the mark")
+	}
+}
