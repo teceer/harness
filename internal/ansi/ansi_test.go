@@ -1,6 +1,7 @@
 package ansi
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -36,5 +37,20 @@ func TestHTMLRealCapture(t *testing.T) {
 	}
 	if strings.Count(got, "<span") != strings.Count(got, "</span>") {
 		t.Errorf("unbalanced spans: %q", got)
+	}
+}
+
+func TestLines(t *testing.T) {
+	got := Lines("\x1b[1;31mred\x1b[0m plain\n\n\x1b[38;5;46mgreen\x1b[39m\x1b[2m dim")
+	want := [][]Seg{
+		{{Text: "red", FG: got[0][0].FG, Bold: true}, {Text: " plain"}},
+		{},
+		{{Text: "green", FG: "#00ff00"}, {Text: " dim", Dim: true}},
+	}
+	if got[0][0].FG == "" {
+		t.Fatalf("red has no colour: %+v", got[0][0])
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Lines:\n got %+v\nwant %+v", got, want)
 	}
 }

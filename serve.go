@@ -203,7 +203,27 @@ type webSession struct {
 
 type webState struct {
 	Sessions []webSession `json:"sessions"`
-	Dirs     []string     `json:"dirs"` // known project directories, for a new session
+	Dirs     []string     `json:"dirs"`     // known project directories, for a new session
+	Profiles []webProfile `json:"profiles"` // display order, "other" last
+}
+
+type webProfile struct {
+	Name  string   `json:"name"`
+	Roots []string `json:"roots"`
+}
+
+// profiles lists the configured profiles with their roots, so a client can
+// group sessions by them and say where each one lives.
+func (s *webServer) profiles() []webProfile {
+	var out []webProfile
+	for _, name := range s.cfg.ProfileNames() {
+		p := webProfile{Name: name, Roots: []string{}}
+		for _, r := range s.cfg.Profiles[name].Roots {
+			p.Roots = append(p.Roots, collapseHome(r))
+		}
+		out = append(out, p)
+	}
+	return append(out, webProfile{Name: "other", Roots: []string{}})
 }
 
 func (s *webServer) snapshot() (webState, error) {
@@ -227,7 +247,7 @@ func (s *webServer) snapshot() (webState, error) {
 	}
 	panes := tmux.Panes()
 
-	var out webState
+	out := webState{Profiles: s.profiles()}
 	seen := map[string]bool{}
 	for _, t := range []tab{tabSessions, tabArchived} {
 		for _, sec := range sections(all, t, true, now) {
@@ -342,10 +362,15 @@ func (s *webServer) paneStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session is not running in harness", http.StatusConflict)
 		return
 	}
+	// The page renders HTML; the native app draws styled segments itself.
+	spans := r.URL.Query().Get("format") == "spans"
 	s.stream(w, r, 350*time.Millisecond, func() (string, any) {
 		raw, err := tmux.Capture(se.TmuxPane)
 		if err != nil {
 			return "", nil
+		}
+		if spans {
+			return raw, map[string]any{"lines": ansi.Lines(raw)}
 		}
 		return raw, map[string]any{"html": ansi.HTML(raw)}
 	})

@@ -50,42 +50,92 @@ func HTML(s string) string {
 			open = false
 		}
 	}
-	write := func(text string) {
+	walk(s, func(st style, text string) {
+		if st != cur {
+			flush() // the style changes: close the current span
+			cur = st
+		}
+		if css := cur.css(); css != "" && !open {
+			fmt.Fprintf(&out, `<span style="%s">`, css)
+			open = true
+		}
+		out.WriteString(html.EscapeString(text))
+	})
+	flush()
+	return out.String()
+}
+
+// Seg is a run of text in one style, for clients that draw the terminal
+// themselves (the native app) rather than render HTML.
+type Seg struct {
+	Text      string `json:"t"`
+	FG        string `json:"fg,omitempty"`
+	BG        string `json:"bg,omitempty"`
+	Bold      bool   `json:"b,omitempty"`
+	Dim       bool   `json:"d,omitempty"`
+	Italic    bool   `json:"i,omitempty"`
+	Underline bool   `json:"u,omitempty"`
+}
+
+// Lines splits terminal output into lines of styled segments, dropping
+// everything but SGR sequences like HTML does.
+func Lines(s string) [][]Seg {
+	lines := [][]Seg{nil}
+	add := func(st style, text string) {
 		if text == "" {
 			return
 		}
-		if css := cur.css(); css != "" {
-			if !open {
-				fmt.Fprintf(&out, `<span style="%s">`, css)
-				open = true
-			}
-		} else {
-			flush()
+		cur := &lines[len(lines)-1]
+		if n := len(*cur); n > 0 && (*cur)[n-1].style() == st {
+			(*cur)[n-1].Text += text
+			return
 		}
-		out.WriteString(html.EscapeString(text))
+		*cur = append(*cur, Seg{Text: text, FG: st.fg, BG: st.bg, Bold: st.bold, Dim: st.dim, Italic: st.ital, Underline: st.under})
 	}
+	walk(s, func(st style, text string) {
+		for {
+			i := strings.IndexByte(text, '\n')
+			if i < 0 {
+				add(st, text)
+				return
+			}
+			add(st, text[:i])
+			lines = append(lines, nil)
+			text = text[i+1:]
+		}
+	})
+	for i, l := range lines {
+		if l == nil {
+			lines[i] = []Seg{} // JSON [] rather than null
+		}
+	}
+	return lines
+}
 
+func (g Seg) style() style {
+	return style{fg: g.FG, bg: g.BG, bold: g.Bold, dim: g.Dim, ital: g.Italic, under: g.Underline}
+}
+
+// walk calls emit for every run of text with the style in force for it.
+func walk(s string, emit func(st style, text string)) {
+	var cur style
 	for i := 0; i < len(s); {
-		c := s[i]
-		if c != 0x1b {
+		if s[i] != 0x1b {
 			j := strings.IndexByte(s[i:], 0x1b)
 			if j < 0 {
-				write(s[i:])
-				break
+				emit(cur, s[i:])
+				return
 			}
-			write(s[i : i+j])
+			emit(cur, s[i:i+j])
 			i += j
 			continue
 		}
 		seq, next := escape(s, i)
 		i = next
 		if strings.HasSuffix(seq, "m") && strings.HasPrefix(seq, "\x1b[") {
-			flush() // the style changes: close the current span
 			cur = apply(cur, seq[2:len(seq)-1])
 		}
 	}
-	flush()
-	return out.String()
 }
 
 // escape returns the escape sequence starting at i and the index after it.

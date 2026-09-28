@@ -90,6 +90,9 @@ func TestWebStateAndMessages(t *testing.T) {
 	if len(st.Dirs) != 1 || st.Dirs[0] != "/tmp/p" {
 		t.Errorf("dirs = %v", st.Dirs)
 	}
+	if n := len(st.Profiles); n == 0 || st.Profiles[n-1].Name != "other" || st.Profiles[n-1].Roots == nil {
+		t.Errorf("profiles = %+v", st.Profiles)
+	}
 
 	var msgs struct {
 		Messages []struct{ Role, Text string }
