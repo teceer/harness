@@ -161,8 +161,10 @@ session its path, which is how Claude reads images. It is meant for a phone: ans
 sofa instead of leaving agents stuck until you are back.
 
 It listens on **loopback only**; `tailscale serve` publishes it on the
-tailnet (`http://<machine>.<tailnet>.ts.net:7777`) and proxies to
-127.0.0.1. That keeps the listener off every real interface, and inbound
+tailnet and proxies to 127.0.0.1: `https://<machine>.<tailnet>.ts.net`
+when HTTPS certificates are enabled for the tailnet (admin console → DNS →
+HTTPS Certificates; the native app needs TLS), otherwise
+`http://<machine>.<tailnet>.ts.net:7777`. That keeps the listener off every real interface, and inbound
 connections are accepted by Tailscale itself — the macOS firewall silently
 drops them for an unsigned binary like this one, which is why binding the
 tailnet address directly does not work. Use the MagicDNS name, not the
@@ -186,6 +188,13 @@ turn. `notify_command` runs via `sh` with the text in `$HARNESS_MESSAGE`
 notify_command = "curl -sS -X POST https://api.telegram.org/bot$TOKEN/sendMessage -d chat_id=$CHAT --data-urlencode text=\"$HARNESS_MESSAGE\""
 web_url = "http://your-mac.tailnet.ts.net:7777"
 ```
+
+The native app (`apps/harness-mobile` in core11) registers its Expo push
+token with `POST /api/push/register`; from then on the same events are also
+sent as push notifications through the Expo Push Service (outbound HTTPS
+only), with Enter / 1 / 2 / Esc buttons when a session waits for an answer.
+Tokens live in `~/.harness/push-tokens.json`; devices Expo reports as gone
+are dropped. With the app set up, `notify_command` can go.
 
 Both are top-level keys: in TOML they must come **before** the first
 `[profiles.…]` table, or they end up inside it.

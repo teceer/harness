@@ -19,6 +19,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	gosync "sync"
 	"syscall"
 	"time"
 
@@ -61,13 +62,16 @@ func cmdServe(args []string) error {
 			return err
 		}
 		fmt.Printf("harness: http://%s/?t=%s\n", ln.Addr(), token)
+		if n := len(srv.pushStore().list()); n > 0 {
+			fmt.Printf("harness: push to %s\n", pushSummary(n))
+		}
 
 		if !*noTailscale {
-			if host, err := tailscaleServe(*port); err != nil {
+			if base, off, err := tailscaleServe(*port); err != nil {
 				fmt.Fprintln(os.Stderr, "harness: tailscale serve:", err)
 			} else {
-				fmt.Printf("harness: http://%s:%d/?t=%s  (tailnet)\n", host, *port, token)
-				defer tailscaleServeOff(*port)
+				fmt.Printf("harness: %s/?t=%s  (tailnet)\n", base, token)
+				defer off()
 			}
 		}
 
@@ -85,33 +89,36 @@ func cmdServe(args []string) error {
 	})
 }
 
-// tailscaleServe publishes the local port on the tailnet and returns this
-// machine's MagicDNS name.
-func tailscaleServe(port int) (string, error) {
+// tailscaleServe publishes the local port on the tailnet and returns its
+// base URL and how to take it down again. With HTTPS certificates enabled
+// for the tailnet it serves https://<machine>.<tailnet>.ts.net (port 443):
+// the native app needs TLS (iOS ATS), and so do the browser's microphone
+// and push APIs. Without them it falls back to plain http on the port.
+func tailscaleServe(port int) (string, func(), error) {
 	bin, err := tailscaleBin()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	target := fmt.Sprintf("http://127.0.0.1:%d", port)
-	out, err := exec.Command(bin, "serve", "--bg", fmt.Sprintf("--http=%d", port), target).CombinedOutput()
+	raw, err := exec.Command(bin, "status", "--json").Output()
 	if err != nil {
-		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-	}
-	host, err := exec.Command(bin, "status", "--json").Output()
-	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var st struct {
-		Self struct{ DNSName string }
+		Self        struct{ DNSName string }
+		CertDomains []string
 	}
-	json.Unmarshal(host, &st)
-	return strings.TrimSuffix(st.Self.DNSName, "."), nil
-}
+	json.Unmarshal(raw, &st)
+	host := strings.TrimSuffix(st.Self.DNSName, ".")
 
-func tailscaleServeOff(port int) {
-	if bin, err := tailscaleBin(); err == nil {
-		exec.Command(bin, "serve", "--bg", fmt.Sprintf("--http=%d", port), "off").Run()
+	flag, base := fmt.Sprintf("--http=%d", port), fmt.Sprintf("http://%s:%d", host, port)
+	if len(st.CertDomains) > 0 {
+		flag, base = "--https=443", "https://"+host
 	}
+	target := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if out, err := exec.Command(bin, "serve", "--bg", flag, target).CombinedOutput(); err != nil {
+		return "", nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return base, func() { exec.Command(bin, "serve", "--bg", flag, "off").Run() }, nil
 }
 
 func tailscaleBin() (string, error) {
@@ -127,6 +134,9 @@ type webServer struct {
 	cfg   *config.Config
 	st    *store.Store
 	token string
+
+	pushOnce gosync.Once
+	push     *pushTokens
 }
 
 func (s *webServer) routes(mux *http.ServeMux) {
@@ -142,6 +152,8 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
 	mux.Handle("POST /api/sessions/{id}/resume", s.auth(s.resume))
 	mux.Handle("POST /api/new", s.auth(s.newSession))
+	mux.Handle("POST /api/push/register", s.auth(s.pushRegister))
+	mux.Handle("POST /api/push/unregister", s.auth(s.pushUnregister))
 }
 
 // auth: the tailnet already limits who can reach us; the token is the
@@ -535,9 +547,6 @@ func (s *webServer) upload(w http.ResponseWriter, r *http.Request) {
 // watch turns status changes into notifications: a session waiting for an
 // answer, or one that just finished its turn.
 func (s *webServer) watch() {
-	if s.cfg.NotifyCommand == "" {
-		return
-	}
 	was := map[string]string{}
 	first := true
 	for ; ; time.Sleep(time.Second) {
@@ -563,6 +572,10 @@ func (s *webServer) watch() {
 }
 
 func (s *webServer) notify(se store.Session, title, body string) {
+	s.sendPush(se, title, body)
+	if s.cfg.NotifyCommand == "" {
+		return
+	}
 	msg := title
 	if body != "" {
 		msg += "\n" + trim(body, 300)

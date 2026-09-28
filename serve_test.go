@@ -136,3 +136,69 @@ func TestWebTokenPersists(t *testing.T) {
 		t.Errorf("token file mode %v (%v)", fi.Mode().Perm(), err)
 	}
 }
+
+func TestPushRegisterAndSend(t *testing.T) {
+	srv, mux := testServer(t)
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{"token":"not-a-token"}`, http.StatusBadRequest},
+		{`{"token":"ExponentPushToken[gone]"}`, http.StatusOK},
+		{`{"token":"ExponentPushToken[ok]","device":"iPhone"}`, http.StatusOK},
+	} {
+		if w := do(mux, "POST", "/api/push/register", "secret-token", tc.body); w.Code != tc.want {
+			t.Fatalf("register %s: %d, want %d", tc.body, w.Code, tc.want)
+		}
+	}
+	if w := do(mux, "POST", "/api/push/register", "", `{"token":"ExponentPushToken[x]"}`); w.Code != http.StatusUnauthorized {
+		t.Fatalf("register without token: %d", w.Code)
+	}
+
+	var got []expoMessage
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = nil
+		json.NewDecoder(r.Body).Decode(&got)
+		var data []map[string]any
+		for _, m := range got {
+			if m.To == "ExponentPushToken[gone]" {
+				data = append(data, map[string]any{"status": "error", "message": "gone",
+					"details": map[string]string{"error": "DeviceNotRegistered"}})
+			} else {
+				data = append(data, map[string]any{"status": "ok", "id": "x"})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer fake.Close()
+	old := expoPushURL
+	expoPushURL = fake.URL
+	defer func() { expoPushURL = old }()
+
+	se := store.Session{ID: "sess-1", Status: store.Waiting, TmuxPane: "%1"}
+	srv.sendPush(se, "⏸ p is waiting", "Allow Bash?")
+	if len(got) != 2 {
+		t.Fatalf("sent %d messages, want 2", len(got))
+	}
+	for _, m := range got {
+		if m.CategoryID != "waiting" || m.Data["sessionId"] != "sess-1" || m.Body != "Allow Bash?" {
+			t.Fatalf("message %+v", m)
+		}
+	}
+	if left := srv.pushStore().list(); len(left) != 1 || left[0] != "ExponentPushToken[ok]" {
+		t.Fatalf("tokens after DeviceNotRegistered: %v", left)
+	}
+
+	// A finished turn has nothing to answer: no action buttons.
+	srv.sendPush(store.Session{ID: "sess-1", Status: store.Idle}, "✅ done", "")
+	if len(got) != 1 || got[0].CategoryID != "" {
+		t.Fatalf("idle message %+v", got)
+	}
+
+	if w := do(mux, "POST", "/api/push/unregister", "secret-token", `{"token":"ExponentPushToken[ok]"}`); w.Code != http.StatusOK {
+		t.Fatalf("unregister: %d", w.Code)
+	}
+	if left := srv.pushStore().list(); len(left) != 0 {
+		t.Fatalf("tokens after unregister: %v", left)
+	}
+}
