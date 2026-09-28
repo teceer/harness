@@ -164,7 +164,7 @@ function profileColor(name) {
 async function api(path, opts = {}) {
   const res = await fetch(path, {...opts, headers:{...(opts.headers||{}), 'Authorization':'Bearer '+token,
     'Content-Type':'application/json'}});
-  if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+  if (!res.ok) throw Object.assign(new Error((await res.text()).trim() || res.statusText), {status: res.status});
   return res.status === 204 ? null : res.json();
 }
 
@@ -353,7 +353,7 @@ function md(src) {
         else if (!t.trim() && listRe.test(lines[i + 1] || '')) continue;
         else break;
       }
-      out.push(renderList(items));
+      out.push(mdList(items));
     } else {
       const para = [];
       for (; i < lines.length && lines[i].trim() && !(para.length && blockStart(lines[i])); i++) para.push(lines[i]);
@@ -363,7 +363,7 @@ function md(src) {
   return out.join('');
 }
 
-function renderList(items) {
+function mdList(items) {
   let html = '';
   const stack = [];
   for (const it of items) {
@@ -391,11 +391,11 @@ function inline(s) {
     .replace(/https?:\/\/[^\s<>"'`)\]]+[^\s<>"'`)\].,;:!?]/g, u =>
       hold(`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`));
   s = esc(s)
-    .replace(/\*\*(?=\S)(.+?)(?<=\S)\*\*/g, '<strong>$1</strong>')
-    .replace(/(^|[^\w])__(?=\S)(.+?)(?<=\S)__(?!\w)/g, '$1<strong>$2</strong>')
-    .replace(/(^|[^*\w])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?!\w)/g, '$1<em>$2</em>')
-    .replace(/(^|[^\w])_(?=\S)(.+?)(?<=\S)_(?!\w)/g, '$1<em>$2</em>')
-    .replace(/~~(?=\S)(.+?)(?<=\S)~~/g, '<del>$1</del>');
+    .replace(/\*\*(\S(?:.*?\S)??)\*\*/g, '<strong>$1</strong>')
+    .replace(/(^|[^\w])__(\S(?:.*?\S)??)__(?!\w)/g, '$1<strong>$2</strong>')
+    .replace(/(^|[^*\w])\*([^\s*](?:.*?[^\s*])??)\*(?!\w)/g, '$1<em>$2</em>')
+    .replace(/(^|[^\w])_(\S(?:.*?\S)??)_(?!\w)/g, '$1<em>$2</em>')
+    .replace(/~~(\S(?:.*?\S)??)~~/g, '<del>$1</del>');
   return s.replace(/\u0000(\d+)\u0000/g, (_, n) => keep[n]);
 }
 
@@ -479,8 +479,24 @@ function connect() {
   es.onmessage = e => { $('conn').textContent = 'live'; apply(JSON.parse(e.data)); };
   es.onerror = () => { $('conn').textContent = 'offline'; es.close(); setTimeout(connect, 2000); };
 }
-api('/api/state').then(s => { apply(s); route(); connect(); })
-  .catch(e => { $('rows').innerHTML = `<p class="err">${esc(e.message)} — open the link from the notification (it carries the token)</p>`; });
+// A home-screen app keeps its own storage, apart from Safari's, and opens
+// without ?t=: ask for the token instead of leaving it locked out.
+function askToken(message) {
+  $('rows').innerHTML = `<p class="err">${esc(message)}</p>
+    <p class="note">Open the link from a notification, or paste the token (~/.harness/web-token):</p>
+    <input type="text" id="tok" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="token">
+    <button class="primary" id="tokSave">save</button>`;
+  $('tokSave').onclick = () => {
+    const t = $('tok').value.trim();
+    if (!t) return;
+    localStorage.setItem('harness-token', t);
+    location.replace(location.pathname + '?t=' + encodeURIComponent(t));
+  };
+}
+if (!token) askToken('no token');
+else api('/api/state').then(s => { apply(s); route(); connect(); })
+  .catch(e => e.status === 401 ? askToken('the token was not accepted')
+    : ($('rows').innerHTML = `<p class="err">${esc(e.message)}</p>`));
 </script>
 </body>
 </html>
