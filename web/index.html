@@ -57,18 +57,20 @@
   #pane{flex:1;overflow:auto;margin:0;padding:10px 12px;background:#12131c;
     font:11px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;
     -webkit-overflow-scrolling:touch;color:var(--text)}
-  .msg{margin-bottom:14px;white-space:pre-wrap;word-break:break-word}
-  .who{font-size:12px;font-weight:700;margin-bottom:2px}
+  .msg{margin-top:10px;word-break:break-word;line-height:1.4}
+  .msg.cont{margin-top:4px}
+  .inner>.msg:first-child{margin-top:0}
+  .who{font-size:12px;font-weight:700;margin-bottom:1px}
   .who.you{color:var(--accent)} .who.claude{color:#c792ea}
-  .msg .body{color:var(--sub)}
+  .msg .body{color:var(--sub);white-space:pre-wrap}
   .msg .md{white-space:normal}
   .md>:first-child{margin-top:0} .md>:last-child{margin-bottom:0}
-  .md p,.md ul,.md ol,.md pre,.md blockquote,.md table{margin:0 0 8px}
-  .md h1,.md h2,.md h3,.md h4,.md h5,.md h6{color:var(--text);margin:12px 0 6px;line-height:1.3}
+  .md p,.md ul,.md ol,.md pre,.md blockquote,.md table{margin:0 0 5px}
+  .md h1,.md h2,.md h3,.md h4,.md h5,.md h6{color:var(--text);margin:8px 0 3px;line-height:1.3}
   .md h1{font-size:18px} .md h2{font-size:17px} .md h3{font-size:16px}
   .md h4,.md h5,.md h6{font-size:15px}
   .md strong{color:var(--text)}
-  .md ul,.md ol{padding-left:22px} .md li{margin:2px 0} .md li>ul,.md li>ol{margin:2px 0}
+  .md ul,.md ol{padding-left:20px} .md li{margin:1px 0} .md li>ul,.md li>ol{margin:1px 0}
   .md a{color:var(--accent)}
   .md code{font:13px ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);
     border:1px solid var(--line);border-radius:5px;padding:0 4px}
@@ -76,8 +78,8 @@
     overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:pre}
   .md pre code{background:none;border:0;padding:0;font-size:12px}
   .md blockquote{border-left:3px solid var(--line);padding-left:10px;color:var(--muted)}
-  .md hr{border:0;border-top:1px solid var(--line);margin:10px 0}
-  .md .table{overflow-x:auto;margin:0 0 8px}
+  .md hr{border:0;border-top:1px solid var(--line);margin:6px 0}
+  .md .table{overflow-x:auto;margin:0 0 5px}
   .md table{border-collapse:collapse;font-size:13px}
   .md th,.md td{border:1px solid var(--line);padding:4px 8px;text-align:left;vertical-align:top}
   .md th{color:var(--text);background:var(--card)}
@@ -399,13 +401,18 @@ function inline(s) {
 
 function renderMessages(msgs) {
   const atBottom = $('msgs').scrollTop + $('msgs').clientHeight > $('msgs').scrollHeight - 80;
+  // Claude Code writes a turn as several blocks: a run from the same side
+  // is labelled once and kept close together.
+  let prev = '';
   const body = (msgs || []).map(m => {
     const who = m.Role === 'user' ? 'you' : 'claude';
     const pics = (m.Images || []).map(i =>
       `<img class="shot" src="data:${esc(i.MediaType)};base64,${esc(i.Data)}" alt="">`).join('');
-    return `<div class="msg ${m.Role === 'user' ? 'you' : ''}">
-        <div class="who ${who}">${who}</div>
-        <div class="body${who === 'claude' ? ' md' : ''}">${who === 'claude' ? md(m.Text) : esc(m.Text)}</div>${pics}</div>`;
+    const label = who === prev ? '' : `<div class="who ${who}">${who}</div>`;
+    const text = who === 'claude' ? md(m.Text) : esc((m.Text || '').trim());
+    const cls = [who === 'you' ? 'you' : '', label ? '' : 'cont'].join(' ');
+    prev = who;
+    return `<div class="msg ${cls}">${label}<div class="body${who === 'claude' ? ' md' : ''}">${text}</div>${pics}</div>`;
   }).join('') || '<p class="note">no messages yet</p>';
   $('msgs').innerHTML = `<div class="inner">${body}</div>`;
   if (atBottom) $('msgs').scrollTop = $('msgs').scrollHeight;
