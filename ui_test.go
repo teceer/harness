@@ -86,11 +86,24 @@ func TestSectionsSplitByHostAndTab(t *testing.T) {
 	}
 }
 
+func TestLatestMessageFirst(t *testing.T) {
+	now := time.Now()
+	ss := []store.Session{
+		{ID: "old", Profile: "p", CreatedAt: now.Add(-time.Hour), MessageAt: now.Add(-time.Minute)},
+		{ID: "fresh", Profile: "p", CreatedAt: now.Add(-2 * time.Hour), MessageAt: now},
+		{ID: "new", Profile: "p", CreatedAt: now.Add(-30 * time.Second)}, // no message yet
+	}
+	byProfile(ss)
+	if ss[0].ID != "fresh" || ss[1].ID != "new" || ss[2].ID != "old" {
+		t.Errorf("order = %s %s %s, want fresh new old", ss[0].ID, ss[1].ID, ss[2].ID)
+	}
+}
+
 func TestSelectionRememberedPerTab(t *testing.T) {
 	now := time.Now()
 	m := newSidebar(&config.Config{SidebarWidth: 42}, nil, "%0")
 	m.Update(dataMsg{sessions: []store.Session{
-		{ID: "a", Profile: "p", Status: store.Idle, TmuxPane: "%1", CreatedAt: now, UpdatedAt: now},
+		{ID: "a", Profile: "p", Status: store.Idle, TmuxPane: "%1", CreatedAt: now, UpdatedAt: now, MessageAt: now.Add(time.Minute)},
 		{ID: "b", Profile: "p", Status: store.Idle, TmuxPane: "%2", CreatedAt: now.Add(time.Second), UpdatedAt: now},
 		{ID: "z", Profile: "p", Status: store.Archived, CreatedAt: now, UpdatedAt: now},
 	}})
@@ -154,7 +167,7 @@ func TestPeekKeepsSelection(t *testing.T) {
 	now := time.Now()
 	m := newSidebar(&config.Config{SidebarWidth: 42}, nil, "%0")
 	m.Update(dataMsg{shown: "%2", sessions: []store.Session{
-		{ID: "a", Profile: "p", Status: store.Idle, TmuxPane: "%1", CreatedAt: now, UpdatedAt: now},
+		{ID: "a", Profile: "p", Status: store.Idle, TmuxPane: "%1", CreatedAt: now, UpdatedAt: now, MessageAt: now.Add(time.Minute)},
 		{ID: "b", Profile: "p", Status: store.Idle, TmuxPane: "%2", CreatedAt: now.Add(time.Second), UpdatedAt: now},
 	}})
 	m.moveTo(0)      // selected "a", "b" is shown on the right

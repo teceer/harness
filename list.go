@@ -96,7 +96,7 @@ func printGrouped(cfg *config.Config, sessions []store.Session) {
 			if oi != oj {
 				return oi < oj
 			}
-			return ss[i].UpdatedAt.After(ss[j].UpdatedAt)
+			return ss[i].LastMessageAt().After(ss[j].LastMessageAt())
 		})
 		fmt.Printf("\033[1m▾ %s\033[0m\n", name)
 		for _, s := range ss {
