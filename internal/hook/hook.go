@@ -194,6 +194,7 @@ func apply(tx *store.Tx, cfg *config.Config, in Input, env Env, now time.Time) e
 		s.SetStatus(store.Working, now)
 		s.Detail = ""
 		s.LastPrompt = clip(in.Prompt, maxPrompt)
+		s.MessageAt = now
 	case "PreToolUse":
 		s.SetStatus(store.Working, now)
 		s.Detail = in.ToolName
@@ -212,6 +213,7 @@ func apply(tx *store.Tx, cfg *config.Config, in Input, env Env, now time.Time) e
 	case "Stop":
 		s.SetStatus(store.Idle, now)
 		s.Detail = ""
+		s.MessageAt = now
 		if in.LastAssistantMessage != "" {
 			s.LastMessage = clip(in.LastAssistantMessage, maxMessage)
 		}

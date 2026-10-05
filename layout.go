@@ -45,18 +45,17 @@ func sections(all []store.Session, t tab, showEnded bool, now time.Time) []secti
 		}
 	}
 	if t == tabSessions {
-		byProfile(a, true)
-		byProfile(b, true)
+		byProfile(a)
+		byProfile(b)
 		return []section{{"active", a}, {"outside harness", b}}
 	}
-	byProfile(a, false)
-	byProfile(b, false)
+	byProfile(a)
+	byProfile(b)
 	return []section{{"archived", a}, {"ended", b}}
 }
 
-// byProfile groups by profile ("other" last). Running sessions keep their
-// creation order so rows do not jump around; stopped ones show newest first.
-func byProfile(ss []store.Session, running bool) {
+// byProfile groups by profile ("other" last), the latest message first.
+func byProfile(ss []store.Session) {
 	sort.SliceStable(ss, func(i, j int) bool {
 		a, b := ss[i], ss[j]
 		if a.Profile != b.Profile {
@@ -65,10 +64,7 @@ func byProfile(ss []store.Session, running bool) {
 			}
 			return a.Profile < b.Profile
 		}
-		if running {
-			return a.CreatedAt.Before(b.CreatedAt)
-		}
-		return a.UpdatedAt.After(b.UpdatedAt)
+		return a.LastMessageAt().After(b.LastMessageAt())
 	})
 }
 

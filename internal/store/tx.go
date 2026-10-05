@@ -49,15 +49,18 @@ func (t *Tx) Put(s Session) error {
 	if s.StatusSince.IsZero() {
 		s.StatusSince = now
 	}
-	var archived int64
+	var archived, message int64
 	if !s.ArchivedAt.IsZero() {
 		archived = s.ArchivedAt.Unix()
 	}
+	if !s.MessageAt.IsZero() {
+		message = s.MessageAt.Unix()
+	}
 	_, err := t.c.ExecContext(bgctx, `INSERT OR REPLACE INTO sessions (`+cols+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.ID, s.Profile, s.ConfigDir, s.Cwd, s.TranscriptPath, s.Name, s.Title, s.Status, s.Detail,
 		s.LastPrompt, s.LastMessage, s.TmuxPane, s.PID,
-		s.CreatedAt.Unix(), s.UpdatedAt.Unix(), s.StatusSince.Unix(), archived)
+		s.CreatedAt.Unix(), s.UpdatedAt.Unix(), s.StatusSince.Unix(), archived, message)
 	return err
 }
 

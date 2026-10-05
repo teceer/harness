@@ -46,12 +46,22 @@ type Session struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	StatusSince    time.Time
+	MessageAt      time.Time // last prompt or reply; zero before the first one
 	ArchivedAt     time.Time // zero when not archived
 }
 
 // Live reports whether the session is supposed to have a running process.
 func (s Session) Live() bool {
 	return s.Status != Ended && s.Status != Archived
+}
+
+// LastMessageAt is when the conversation last moved (a prompt or a reply),
+// the creation time for a session that has not had one yet.
+func (s Session) LastMessageAt() time.Time {
+	if s.MessageAt.IsZero() {
+		return s.CreatedAt
+	}
+	return s.MessageAt
 }
 
 type Store struct{ db *sql.DB }
@@ -79,6 +89,8 @@ var migrations = []string{
 	);
 	CREATE INDEX IF NOT EXISTS sessions_pane ON sessions(tmux_pane) WHERE tmux_pane != '';`,
 	`ALTER TABLE sessions ADD COLUMN name TEXT NOT NULL DEFAULT '';`,
+	`ALTER TABLE sessions ADD COLUMN message_at INTEGER NOT NULL DEFAULT 0;
+	UPDATE sessions SET message_at = status_since;`,
 }
 
 func migrate(db *sql.DB) error {
@@ -188,21 +200,24 @@ func (s *Store) Tx(fn func(*Tx) error) error {
 }
 
 const cols = `session_id, profile, config_dir, cwd, transcript_path, name, title, status, detail,
-	last_prompt, last_message, tmux_pane, pid, created_at, updated_at, status_since, archived_at`
+	last_prompt, last_message, tmux_pane, pid, created_at, updated_at, status_since, archived_at, message_at`
 
 type scanner interface{ Scan(...any) error }
 
 func scan(r scanner) (Session, error) {
 	var s Session
-	var created, updated, since, archived int64
+	var created, updated, since, archived, message int64
 	err := r.Scan(&s.ID, &s.Profile, &s.ConfigDir, &s.Cwd, &s.TranscriptPath, &s.Name, &s.Title,
 		&s.Status, &s.Detail, &s.LastPrompt, &s.LastMessage, &s.TmuxPane, &s.PID,
-		&created, &updated, &since, &archived)
+		&created, &updated, &since, &archived, &message)
 	s.CreatedAt = time.Unix(created, 0)
 	s.UpdatedAt = time.Unix(updated, 0)
 	s.StatusSince = time.Unix(since, 0)
 	if archived > 0 {
 		s.ArchivedAt = time.Unix(archived, 0)
+	}
+	if message > 0 {
+		s.MessageAt = time.Unix(message, 0)
 	}
 	return s, err
 }
