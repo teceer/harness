@@ -332,7 +332,7 @@ const (
 // SeqNumber is the sequence for ⌥n, n in 1…9.
 func SeqNumber(n int) string { return fmt.Sprintf("\x1b[10%d~", 10+n) }
 
-// bindKeys: ⌥⇥ toggles between the sidebar and the session next to it,
+// bindKeys: ⌥⇥ cycles the sidebar, the session next to it and the changes pane,
 // ⌘[ / ⌘] show the previous / next harness session, ⌥n the n-th one,
 // ⌘⇧A toggles Sessions ⇄ Archived, ⌘⇧N starts a new session, ⌘⇧G
 // opens / closes the changes pane.
@@ -342,7 +342,9 @@ func bindKeys(sidebar, exe string) error {
 	binds := [][]string{
 		{"User0", "run-shell", "-b", Quote(exe) + " switch prev"},
 		{"User1", "run-shell", "-b", Quote(exe) + " switch next"},
-		{"User2", "if-shell", "-F", "#{" + sidebarOpt + "}", "select-pane -R", back},
+		// sidebar → session → changes pane (when open) → sidebar: -R wraps
+		// around from the rightmost pane; any other window goes back.
+		{"User2", "if-shell", "-F", "#{||:#{" + changesOpt + "},#{==:#{window_panes},1}}", back, "select-pane -R"},
 	}
 	for n := 1; n <= 9; n++ {
 		seqs = append(seqs, SeqNumber(n))
@@ -693,9 +695,21 @@ func Popup(sidebar string, sidebarWidth int, title, command string) error {
 		fmt.Sscan(out, &width, &wh)
 		left = 0
 	}
-	_, err = run("display-popup", "-E", "-T", " "+title+" ", "-S", "fg=#7AA2FF", "-t", sidebar,
-		"-x", strconv.Itoa(left), "-y", strconv.Itoa(wh), "-w", strconv.Itoa(width), "-h", strconv.Itoa(wh), command)
-	return err
+	cmd := exec.Command("tmux", argv("display-popup", "-E", "-T", " "+title+" ", "-S", "fg=#7AA2FF", "-t", sidebar,
+		"-x", strconv.Itoa(left), "-y", strconv.Itoa(wh), "-w", strconv.Itoa(width), "-h", strconv.Itoa(wh), command)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	// display-popup exits with the command's own status: a pager that is
+	// quit, or 129 (SIGHUP) when tmux closes the popup under it. Only a
+	// failure tmux reports itself is an error.
+	if _, ok := err.(*exec.ExitError); ok && strings.TrimSpace(stderr.String()) == "" {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("tmux display-popup: %v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
 
 // Message shows text on the status line of the harness clients.
@@ -732,7 +746,7 @@ set -g status-style "bg=default,fg=#7C849C"
 set -g status-left ""
 set -g window-status-format ""
 set -g window-status-current-format ""
-set -g status-right " ⌥⇥ sidebar ⇄ session · ⌘[ ⌘] ⌥1-9 switch · ⌘⇧G changes · C-b d detach "
+set -g status-right " ⌥⇥ next pane · ⌘[ ⌘] ⌥1-9 switch · ⌘⇧G changes · C-b d detach "
 set -g pane-border-style "fg=#3A4160"
 set -g pane-active-border-style "fg=#7AA2FF"
 if-shell "test -f ` + Quote(local) + `" "source-file ` + Quote(local) + `"
