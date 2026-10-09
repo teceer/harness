@@ -402,6 +402,53 @@ func Capture(pane string) (string, error) {
 	return run("capture-pane", "-e", "-p", "-J", "-t", pane)
 }
 
+// Scrollback returns up to lines of history above the visible screen (not
+// the screen itself), for scrolling back on a phone without touching the
+// pane's own copy mode. alt reports a full-screen program (alternate
+// screen), which keeps no scrollback in tmux at all.
+func Scrollback(pane string, lines int) (out string, alt bool, err error) {
+	info, err := run("display-message", "-p", "-t", pane, "#{alternate_on} #{history_size}")
+	if err != nil {
+		return "", false, err
+	}
+	var size int
+	var altOn string
+	fmt.Sscan(info, &altOn, &size)
+	if altOn == "1" || size == 0 || lines <= 0 {
+		return "", altOn == "1", nil
+	}
+	out, err = run("capture-pane", "-e", "-p", "-J", "-t", pane, "-S", "-"+strconv.Itoa(min(lines, size)), "-E", "-1")
+	return out, false, err
+}
+
+// Wheel scrolls a full-screen program the way a mouse wheel over the pane
+// does: lines < 0 scrolls up (back), > 0 down. It only applies to a pane
+// on the alternate screen whose program asked for SGR mouse reports (as
+// Claude Code does); ok is false otherwise.
+func Wheel(pane string, lines int) (ok bool, err error) {
+	info, err := run("display-message", "-p", "-t", pane, "#{alternate_on} #{mouse_sgr_flag} #{pane_width} #{pane_height}")
+	if err != nil {
+		return false, err
+	}
+	var alt, sgr string
+	var w, h int
+	fmt.Sscan(info, &alt, &sgr, &w, &h)
+	if alt != "1" || sgr != "1" {
+		return false, nil
+	}
+	button, n := 65, lines // 64 wheel up, 65 wheel down
+	if lines < 0 {
+		button, n = 64, -lines
+	}
+	ev := fmt.Sprintf("\x1b[<%d;%d;%dM", button, max(1, w/2), max(1, h/2))
+	for range n {
+		if _, err := run("send-keys", "-t", pane, "-l", ev); err != nil {
+			return true, err
+		}
+	}
+	return true, nil
+}
+
 // SendKey presses one named key in pane (Enter, Escape, 1, y, …).
 func SendKey(pane, key string) error {
 	_, err := run("send-keys", "-t", pane, key)

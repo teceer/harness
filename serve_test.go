@@ -90,6 +90,9 @@ func TestWebStateAndMessages(t *testing.T) {
 	if len(st.Dirs) != 1 || st.Dirs[0] != "/tmp/p" {
 		t.Errorf("dirs = %v", st.Dirs)
 	}
+	if n := len(st.Profiles); n == 0 || st.Profiles[n-1].Name != "other" || st.Profiles[n-1].Roots == nil {
+		t.Errorf("profiles = %+v", st.Profiles)
+	}
 
 	var msgs struct {
 		Messages []struct{ Role, Text string }
@@ -115,6 +118,12 @@ func TestWebSendGuards(t *testing.T) {
 			t.Errorf("%s: status %d, want %d", tc.name, got, tc.want)
 		}
 	}
+	if got := do(mux, "POST", "/api/sessions/sess-1/scroll", "secret-token", `{"lines":-3}`).Code; got != http.StatusConflict {
+		t.Errorf("scroll outside harness: status %d", got)
+	}
+	if got := do(mux, "GET", "/api/sessions/sess-1/scrollback", "secret-token", "").Code; got != http.StatusConflict {
+		t.Errorf("scrollback outside harness: status %d", got)
+	}
 	if got := do(mux, "POST", "/api/new", "secret-token", `{"dir":"/nope/nope"}`).Code; got != http.StatusBadRequest {
 		t.Errorf("new in a missing directory: status %d", got)
 	}
@@ -134,5 +143,115 @@ func TestWebTokenPersists(t *testing.T) {
 	fi, err := os.Stat(filepath.Join(cfg.Home, "web-token"))
 	if err != nil || fi.Mode().Perm() != 0o600 {
 		t.Errorf("token file mode %v (%v)", fi.Mode().Perm(), err)
+	}
+}
+
+func TestPushRegisterAndSend(t *testing.T) {
+	srv, mux := testServer(t)
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{"token":"not-a-token"}`, http.StatusBadRequest},
+		{`{"token":"ExponentPushToken[gone]"}`, http.StatusOK},
+		{`{"token":"ExponentPushToken[ok]","device":"iPhone"}`, http.StatusOK},
+	} {
+		if w := do(mux, "POST", "/api/push/register", "secret-token", tc.body); w.Code != tc.want {
+			t.Fatalf("register %s: %d, want %d", tc.body, w.Code, tc.want)
+		}
+	}
+	if w := do(mux, "POST", "/api/push/register", "", `{"token":"ExponentPushToken[x]"}`); w.Code != http.StatusUnauthorized {
+		t.Fatalf("register without token: %d", w.Code)
+	}
+
+	var got []expoMessage
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = nil
+		json.NewDecoder(r.Body).Decode(&got)
+		var data []map[string]any
+		for _, m := range got {
+			if m.To == "ExponentPushToken[gone]" {
+				data = append(data, map[string]any{"status": "error", "message": "gone",
+					"details": map[string]string{"error": "DeviceNotRegistered"}})
+			} else {
+				data = append(data, map[string]any{"status": "ok", "id": "x"})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer fake.Close()
+	old := expoPushURL
+	expoPushURL = fake.URL
+	defer func() { expoPushURL = old }()
+
+	se := store.Session{ID: "sess-1", Status: store.Waiting, TmuxPane: "%1"}
+	srv.sendPush(se, "⏸ p is waiting", "Allow Bash?")
+	if len(got) != 2 {
+		t.Fatalf("sent %d messages, want 2", len(got))
+	}
+	for _, m := range got {
+		if m.CategoryID != "waiting" || m.Data["sessionId"] != "sess-1" || m.Body != "Allow Bash?" {
+			t.Fatalf("message %+v", m)
+		}
+	}
+	if left := srv.pushStore().list(); len(left) != 1 || left[0] != "ExponentPushToken[ok]" {
+		t.Fatalf("tokens after DeviceNotRegistered: %v", left)
+	}
+
+	// A finished turn has nothing to answer: no action buttons.
+	srv.sendPush(store.Session{ID: "sess-1", Status: store.Idle}, "✅ done", "")
+	if len(got) != 1 || got[0].CategoryID != "" {
+		t.Fatalf("idle message %+v", got)
+	}
+
+	if w := do(mux, "POST", "/api/push/unregister", "secret-token", `{"token":"ExponentPushToken[ok]"}`); w.Code != http.StatusOK {
+		t.Fatalf("unregister: %d", w.Code)
+	}
+	if left := srv.pushStore().list(); len(left) != 0 {
+		t.Fatalf("tokens after unregister: %v", left)
+	}
+}
+
+func TestUnread(t *testing.T) {
+	srv, mux := testServer(t)
+	state := func() webState {
+		var st webState
+		json.Unmarshal(do(mux, "GET", "/api/state", "secret-token", "").Body.Bytes(), &st)
+		return st
+	}
+	// Finished before tracking started: read.
+	if st := state(); st.Sessions[0].Unread {
+		t.Fatal("an old finish must not count as unread")
+	}
+
+	// A turn finishes after that: unread until the session is opened.
+	later := time.Now().Add(2 * time.Second)
+	se, _ := srv.st.Find("sess-1")
+	se.Status, se.StatusSince = store.Idle, later
+	srv.st.Tx(func(tx *store.Tx) error { return tx.Put(se) })
+	if st := state(); !st.Sessions[0].Unread {
+		t.Fatalf("a new finish must be unread: %+v", st.Sessions[0])
+	}
+	srv.readMu.Lock()
+	rs := srv.loadRead()
+	rs.Seen["sess-1"] = later.Add(time.Second) // opened after it finished
+	srv.saveRead(rs)
+	srv.readMu.Unlock()
+	if st := state(); st.Sessions[0].Unread {
+		t.Fatal("opened: must be read")
+	}
+
+	// Marked by hand, then opened again.
+	if w := do(mux, "POST", "/api/sessions/sess-1/unread", "secret-token", ""); w.Code != http.StatusOK {
+		t.Fatalf("unread: %d", w.Code)
+	}
+	if st := state(); !st.Sessions[0].Unread {
+		t.Fatal("marked unread must show as unread")
+	}
+	if w := do(mux, "POST", "/api/sessions/sess-1/read", "secret-token", ""); w.Code != http.StatusOK {
+		t.Fatalf("read: %d", w.Code)
+	}
+	if st := state(); st.Sessions[0].Unread {
+		t.Fatal("read must clear the mark")
 	}
 }

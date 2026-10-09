@@ -18,7 +18,9 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
+	gosync "sync"
 	"syscall"
 	"time"
 
@@ -61,13 +63,16 @@ func cmdServe(args []string) error {
 			return err
 		}
 		fmt.Printf("harness: http://%s/?t=%s\n", ln.Addr(), token)
+		if n := len(srv.pushStore().list()); n > 0 {
+			fmt.Printf("harness: push to %s\n", pushSummary(n))
+		}
 
 		if !*noTailscale {
-			if host, err := tailscaleServe(*port); err != nil {
+			if base, off, err := tailscaleServe(*port); err != nil {
 				fmt.Fprintln(os.Stderr, "harness: tailscale serve:", err)
 			} else {
-				fmt.Printf("harness: http://%s:%d/?t=%s  (tailnet)\n", host, *port, token)
-				defer tailscaleServeOff(*port)
+				fmt.Printf("harness: %s/?t=%s  (tailnet)\n", base, token)
+				defer off()
 			}
 		}
 
@@ -85,33 +90,36 @@ func cmdServe(args []string) error {
 	})
 }
 
-// tailscaleServe publishes the local port on the tailnet and returns this
-// machine's MagicDNS name.
-func tailscaleServe(port int) (string, error) {
+// tailscaleServe publishes the local port on the tailnet and returns its
+// base URL and how to take it down again. With HTTPS certificates enabled
+// for the tailnet it serves https://<machine>.<tailnet>.ts.net (port 443):
+// the native app needs TLS (iOS ATS), and so do the browser's microphone
+// and push APIs. Without them it falls back to plain http on the port.
+func tailscaleServe(port int) (string, func(), error) {
 	bin, err := tailscaleBin()
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	target := fmt.Sprintf("http://127.0.0.1:%d", port)
-	out, err := exec.Command(bin, "serve", "--bg", fmt.Sprintf("--http=%d", port), target).CombinedOutput()
+	raw, err := exec.Command(bin, "status", "--json").Output()
 	if err != nil {
-		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-	}
-	host, err := exec.Command(bin, "status", "--json").Output()
-	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	var st struct {
-		Self struct{ DNSName string }
+		Self        struct{ DNSName string }
+		CertDomains []string
 	}
-	json.Unmarshal(host, &st)
-	return strings.TrimSuffix(st.Self.DNSName, "."), nil
-}
+	json.Unmarshal(raw, &st)
+	host := strings.TrimSuffix(st.Self.DNSName, ".")
 
-func tailscaleServeOff(port int) {
-	if bin, err := tailscaleBin(); err == nil {
-		exec.Command(bin, "serve", "--bg", fmt.Sprintf("--http=%d", port), "off").Run()
+	flag, base := fmt.Sprintf("--http=%d", port), fmt.Sprintf("http://%s:%d", host, port)
+	if len(st.CertDomains) > 0 {
+		flag, base = "--https=443", "https://"+host
 	}
+	target := fmt.Sprintf("http://127.0.0.1:%d", port)
+	if out, err := exec.Command(bin, "serve", "--bg", flag, target).CombinedOutput(); err != nil {
+		return "", nil, fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return base, func() { exec.Command(bin, "serve", "--bg", flag, "off").Run() }, nil
 }
 
 func tailscaleBin() (string, error) {
@@ -127,6 +135,30 @@ type webServer struct {
 	cfg   *config.Config
 	st    *store.Store
 	token string
+
+	pushOnce gosync.Once
+	push     *pushTokens
+
+	readMu gosync.Mutex // guards read-state.json
+
+	lastInput gosync.Map // pane → time of the last remote input (see paneEvery)
+}
+
+// paneEvery is how often a pane is re-captured for a phone watching it:
+// fast right after remote input (scrolling, typing), so the screen follows
+// the finger, and slower otherwise.
+func (s *webServer) paneEvery(pane string) func() time.Duration {
+	return func() time.Duration {
+		if t, ok := s.lastInput.Load(pane); ok {
+			switch since := time.Since(t.(time.Time)); {
+			case since < 1500*time.Millisecond: // mid-drag: small corrections
+				return 50 * time.Millisecond
+			case since < 3*time.Second:
+				return 120 * time.Millisecond
+			}
+		}
+		return 350 * time.Millisecond
+	}
 }
 
 func (s *webServer) routes(mux *http.ServeMux) {
@@ -137,11 +169,17 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/sessions/{id}/messages", s.auth(s.messages))
 	mux.Handle("GET /api/sessions/{id}/stream", s.auth(s.messageStream))
 	mux.Handle("GET /api/sessions/{id}/pane", s.auth(s.paneStream))
+	mux.Handle("GET /api/sessions/{id}/scrollback", s.auth(s.scrollback))
+	mux.Handle("POST /api/sessions/{id}/scroll", s.auth(s.scroll))
 	mux.Handle("POST /api/sessions/{id}/upload", s.auth(s.upload))
 	mux.Handle("POST /api/sessions/{id}/send", s.auth(s.send))
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
 	mux.Handle("POST /api/sessions/{id}/resume", s.auth(s.resume))
 	mux.Handle("POST /api/new", s.auth(s.newSession))
+	mux.Handle("POST /api/sessions/{id}/read", s.auth(s.markRead(false)))
+	mux.Handle("POST /api/sessions/{id}/unread", s.auth(s.markRead(true)))
+	mux.Handle("POST /api/push/register", s.auth(s.pushRegister))
+	mux.Handle("POST /api/push/unregister", s.auth(s.pushUnregister))
 }
 
 // auth: the tailnet already limits who can reach us; the token is the
@@ -187,11 +225,33 @@ type webSession struct {
 	Shown     bool   `json:"shown"`
 	Running   bool   `json:"running"` // has a live harness pane to type into
 	Resumable bool   `json:"resumable"`
+	Unread    bool   `json:"unread"` // news since you last opened it (see read.go)
 }
 
 type webState struct {
 	Sessions []webSession `json:"sessions"`
-	Dirs     []string     `json:"dirs"` // known project directories, for a new session
+	Dirs     []string     `json:"dirs"`     // known project directories, for a new session
+	Profiles []webProfile `json:"profiles"` // display order, "other" last
+	Unread   int          `json:"unread"`   // live sessions with news, for the icon badge
+}
+
+type webProfile struct {
+	Name  string   `json:"name"`
+	Roots []string `json:"roots"`
+}
+
+// profiles lists the configured profiles with their roots, so a client can
+// group sessions by them and say where each one lives.
+func (s *webServer) profiles() []webProfile {
+	var out []webProfile
+	for _, name := range s.cfg.ProfileNames() {
+		p := webProfile{Name: name, Roots: []string{}}
+		for _, r := range s.cfg.Profiles[name].Roots {
+			p.Roots = append(p.Roots, collapseHome(r))
+		}
+		out = append(out, p)
+	}
+	return append(out, webProfile{Name: "other", Roots: []string{}})
 }
 
 func (s *webServer) snapshot() (webState, error) {
@@ -214,8 +274,11 @@ func (s *webServer) snapshot() (webState, error) {
 		shown = tmux.Shown(sb)
 	}
 	panes := tmux.Panes()
+	s.readMu.Lock()
+	rs := s.loadRead()
+	s.readMu.Unlock()
 
-	var out webState
+	out := webState{Profiles: s.profiles()}
 	seen := map[string]bool{}
 	for _, t := range []tab{tabSessions, tabArchived} {
 		for _, sec := range sections(all, t, true, now) {
@@ -227,7 +290,11 @@ func (s *webServer) snapshot() (webState, error) {
 					Age: ago(x.StatusSince), Section: sec.title, Number: numbers[x.ID],
 					Shown: x.TmuxPane != "" && x.TmuxPane == shown, Running: live,
 					Resumable: !x.Live() && hasTranscript(x),
+					Unread:    rs.unread(x),
 				})
+				if x.Live() && rs.unread(x) {
+					out.Unread++
+				}
 			}
 		}
 		for _, x := range all { // directories of every session, newest first
@@ -304,7 +371,7 @@ func (s *webServer) messageStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	s.stream(w, r, 400*time.Millisecond, func() (string, any) {
+	s.stream(w, r, func() time.Duration { return 400 * time.Millisecond }, func() (string, any) {
 		fi, err := os.Stat(se.TranscriptPath)
 		if err != nil {
 			return "", nil
@@ -330,18 +397,91 @@ func (s *webServer) paneStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session is not running in harness", http.StatusConflict)
 		return
 	}
-	s.stream(w, r, 350*time.Millisecond, func() (string, any) {
+	// The page renders HTML; the native app draws styled segments itself.
+	spans := r.URL.Query().Get("format") == "spans"
+	s.stream(w, r, s.paneEvery(se.TmuxPane), func() (string, any) {
 		raw, err := tmux.Capture(se.TmuxPane)
 		if err != nil {
 			return "", nil
+		}
+		if spans {
+			return raw, map[string]any{"lines": ansi.Lines(raw)}
 		}
 		return raw, map[string]any{"html": ansi.HTML(raw)}
 	})
 }
 
+// scroll moves a full-screen session like the mouse wheel on the Mac, a
+// line at a time: {"lines": -3} scrolls back. Sessions with ordinary
+// scrollback are scrolled on the phone instead (see scrollback).
+func (s *webServer) scroll(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Lines int `json:"lines"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10)).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if se.TmuxPane == "" || !paneExists(se.TmuxPane) {
+		http.Error(w, "session is not running in harness", http.StatusConflict)
+		return
+	}
+	s.lastInput.Store(se.TmuxPane, time.Now())
+	ok, err := tmux.Wheel(se.TmuxPane, max(-maxWheel, min(body.Lines, maxWheel)))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, "not a full-screen session with mouse scrolling", http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]string{"ok": "1"})
+}
+
+// maxWheel bounds one scroll request (wheel events sent at once).
+const maxWheel = 40
+
+// maxScrollback bounds the history a client can ask for at once.
+const maxScrollback = 5000
+
+// scrollback returns the pane's history above the visible screen, once:
+// the live stream stays small (the screen only) and a phone fetches what
+// is above it when scrolled to the top. ?lines=N (default 500).
+func (s *webServer) scrollback(w http.ResponseWriter, r *http.Request) {
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if se.TmuxPane == "" || !paneExists(se.TmuxPane) {
+		http.Error(w, "session is not running in harness", http.StatusConflict)
+		return
+	}
+	lines, err := strconv.Atoi(r.URL.Query().Get("lines"))
+	if err != nil || lines <= 0 {
+		lines = 500
+	}
+	raw, alt, err := tmux.Scrollback(se.TmuxPane, min(lines, maxScrollback))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := ansi.Lines(raw)
+	if raw == "" {
+		out = [][]ansi.Seg{}
+	}
+	writeJSON(w, map[string]any{"lines": out, "alt": alt})
+}
+
 // stream sends payload over SSE whenever version changes; the version also
 // keeps us from re-sending an unchanged screen.
-func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every time.Duration, read func() (version string, payload any)) {
+func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every func() time.Duration, read func() (version string, payload any)) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	flusher, ok := w.(http.Flusher)
@@ -361,7 +501,7 @@ func (s *webServer) stream(w http.ResponseWriter, r *http.Request, every time.Du
 		select {
 		case <-r.Context().Done():
 			return
-		case <-time.After(every):
+		case <-time.After(every()):
 		}
 	}
 }
@@ -388,6 +528,7 @@ func (s *webServer) send(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session is not running in harness", http.StatusConflict)
 		return
 	}
+	s.lastInput.Store(se.TmuxPane, time.Now())
 	if body.Key != "" {
 		if !allowedKeys[body.Key] {
 			http.Error(w, "key not allowed", http.StatusBadRequest)
@@ -410,6 +551,7 @@ func (s *webServer) send(w http.ResponseWriter, r *http.Request) {
 var allowedKeys = map[string]bool{
 	"Enter": true, "Escape": true, "1": true, "2": true, "3": true,
 	"y": true, "n": true, "Up": true, "Down": true, "Tab": true,
+	"PageUp": true, "PageDown": true, // scroll a full-screen session
 }
 
 func (s *webServer) archiveSession(w http.ResponseWriter, r *http.Request) {
@@ -535,9 +677,6 @@ func (s *webServer) upload(w http.ResponseWriter, r *http.Request) {
 // watch turns status changes into notifications: a session waiting for an
 // answer, or one that just finished its turn.
 func (s *webServer) watch() {
-	if s.cfg.NotifyCommand == "" {
-		return
-	}
 	was := map[string]string{}
 	first := true
 	for ; ; time.Sleep(time.Second) {
@@ -563,6 +702,10 @@ func (s *webServer) watch() {
 }
 
 func (s *webServer) notify(se store.Session, title, body string) {
+	s.sendPush(se, title, body)
+	if s.cfg.NotifyCommand == "" {
+		return
+	}
 	msg := title
 	if body != "" {
 		msg += "\n" + trim(body, 300)
