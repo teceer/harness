@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -169,16 +170,40 @@ func switchTo(cfg *config.Config, st *store.Store, which string) error {
 		}
 		target = order[n-1]
 	}
+	return showSession(cfg, sb, all, target)
+}
+
+// showSession puts target's pane next to the sidebar in the main tmux
+// window and focuses it — what ⌘[ ⌘] and the board's click on a character
+// do, without opening another terminal.
+func showSession(cfg *config.Config, sb string, all []store.Session, target store.Session) error {
 	names := map[string]string{}
 	for _, s := range all {
 		if s.TmuxPane != "" {
 			names[s.TmuxPane] = windowName(s)
 		}
 	}
-	err = tmux.Show(sb, target.TmuxPane, cfg.SidebarWidth, func(p string) string { return names[p] }, true)
+	err := tmux.Show(sb, target.TmuxPane, cfg.SidebarWidth, func(p string) string { return names[p] }, true)
 	nudgeSidebar(syscall.SIGUSR1)
 	bump(cfg) // fallback for a sidebar that cannot be signalled
 	return err
+}
+
+// focusSession is showSession for a session looked up by the web server:
+// it needs a live pane and a running sidebar.
+func focusSession(cfg *config.Config, st *store.Store, se store.Session) error {
+	if se.TmuxPane == "" || !paneExists(se.TmuxPane) {
+		return errors.New("session is not running in harness")
+	}
+	sb := tmux.Sidebar()
+	if sb == "" {
+		return errors.New("sidebar is not running")
+	}
+	all, err := st.List()
+	if err != nil {
+		return err
+	}
+	return showSession(cfg, sb, all, se)
 }
 
 // uiDebug logs every non-periodic UI message when HARNESS_UI_DEBUG names a file.

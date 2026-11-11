@@ -145,6 +145,10 @@ type webServer struct {
 	readMu gosync.Mutex // guards read-state.json
 
 	lastInput gosync.Map // pane → time of the last remote input (see paneEvery)
+
+	// focusFn shows a session in the terminal (POST …/focus); tests inject
+	// one, nil means focusSession.
+	focusFn func(*config.Config, *store.Store, store.Session) error
 }
 
 // paneEvery is how often a pane is re-captured for a phone watching it:
@@ -184,6 +188,7 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/sessions/{id}/keys", s.auth(s.liveKeys))
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
 	mux.Handle("POST /api/sessions/{id}/resume", s.auth(s.resume))
+	mux.Handle("POST /api/sessions/{id}/focus", s.auth(s.focus))
 	mux.Handle("POST /api/new", s.auth(s.newSession))
 	mux.Handle("POST /api/sessions/{id}/read", s.auth(s.markRead(false)))
 	mux.Handle("POST /api/sessions/{id}/unread", s.auth(s.markRead(true)))
@@ -577,6 +582,26 @@ func (s *webServer) archiveSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.logAction(r, "archive %s", short(se.ID))
+	writeJSON(w, map[string]string{"ok": "1"})
+}
+
+// focus switches the harness terminal to the session's pane, as ⌘[ ⌘] do:
+// the board's click on a character on a desktop lands here.
+func (s *webServer) focus(w http.ResponseWriter, r *http.Request) {
+	se, err := s.st.Find(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	fn := s.focusFn
+	if fn == nil {
+		fn = focusSession
+	}
+	if err := fn(s.cfg, s.st, se); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	s.logAction(r, "focus %s", short(se.ID))
 	writeJSON(w, map[string]string{"ok": "1"})
 }
 
