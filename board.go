@@ -14,6 +14,7 @@ import (
 	"strings"
 	gosync "sync"
 	"time"
+	"unicode"
 
 	"github.com/teceer/harness/internal/ansi"
 	"github.com/teceer/harness/internal/store"
@@ -105,6 +106,18 @@ type transcriptScan struct {
 	parent string    // session this one was resumed from (handoff after /clear)
 	msgs   []linkMsg // cross-session messages received
 	seen   map[string]bool
+
+	// For the 8-bit board, read from the same pass over the lines.
+	model string           // model of the last assistant turn
+	ctx   int              // context the last turn was sent with (tokens)
+	tool  string           // name of the last tool call
+	used  map[int64]tokens // tokens per hour bucket (unix hour → tokens)
+}
+
+// tokens is what a stretch of a transcript cost in tokens.
+type tokens struct {
+	In  int `json:"in"`  // read by the model: new input and cache reads/writes
+	Out int `json:"out"` // written by the model
 }
 
 type linkMsg struct {
@@ -121,6 +134,16 @@ var (
 	crossRe   = regexp.MustCompile(`cross-session-message from=\\?"uds:[^"\\]*/(\d+)\.sock\\?"`)
 	stampRe   = regexp.MustCompile(`"timestamp":"([^"]+)"`)
 	handoffRe = regexp.MustCompile(`przeczytaj [^"\\]*handoffs/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.md`)
+
+	modelRe   = regexp.MustCompile(`"model":"(claude-[a-z0-9-]+|[a-z]+)"`)
+	toolUseRe = regexp.MustCompile(`"type":"tool_use","id":"[^"]*","name":"([A-Za-z0-9_]+)"`)
+	usageRe   = regexp.MustCompile(`"usage":\{`)
+	tokRe     = map[string]*regexp.Regexp{
+		"in":    regexp.MustCompile(`"input_tokens":(\d+)`),
+		"write": regexp.MustCompile(`"cache_creation_input_tokens":(\d+)`),
+		"read":  regexp.MustCompile(`"cache_read_input_tokens":(\d+)`),
+		"out":   regexp.MustCompile(`"output_tokens":(\d+)`),
+	}
 )
 
 // scanTranscript brings the cached scan of path up to date.
@@ -181,6 +204,9 @@ func scanLine(sc *transcriptScan, line string) {
 			}
 		}
 	}
+	if strings.Contains(line, `"type":"assistant"`) {
+		scanAssistant(sc, line)
+	}
 	if !strings.Contains(line, "cross-session-message from=") {
 		return
 	}
@@ -201,6 +227,75 @@ func scanLine(sc *transcriptScan, line string) {
 	}
 }
 
+// scanAssistant reads what an assistant entry says about the model, the
+// tool it called and the tokens it cost. Subagents (sidechains) have their
+// own context, so only the main thread sets model and ctx; their tokens
+// still count.
+func scanAssistant(sc *transcriptScan, line string) {
+	side := strings.Contains(line, `"isSidechain":true`)
+	if !side {
+		if m := modelRe.FindStringSubmatch(line); m != nil && m[1] != "synthetic" {
+			sc.model = m[1]
+		}
+		if m := toolUseRe.FindStringSubmatch(line); m != nil {
+			sc.tool = m[1]
+		}
+	}
+	loc := usageRe.FindStringIndex(line)
+	if loc == nil {
+		return
+	}
+	blob := line[loc[1]:min(len(line), loc[1]+400)]
+	n := func(k string) int {
+		if m := tokRe[k].FindStringSubmatch(blob); m != nil {
+			v, _ := strconv.Atoi(m[1])
+			return v
+		}
+		return 0
+	}
+	u := tokens{In: n("in") + n("write") + n("read"), Out: n("out")}
+	if u.In == 0 && u.Out == 0 {
+		return
+	}
+	if !side {
+		sc.ctx = u.In + u.Out
+	}
+	var at time.Time
+	if m := stampRe.FindStringSubmatch(line); m != nil {
+		at, _ = time.Parse(time.RFC3339Nano, m[1])
+	}
+	if sc.used == nil {
+		sc.used = map[int64]tokens{}
+	}
+	h := at.Unix() / 3600
+	b := sc.used[h]
+	b.In += u.In
+	b.Out += u.Out
+	sc.used[h] = b
+}
+
+// usedSince sums the token buckets from since on (whole hours, so the
+// first one may start a little earlier).
+func (sc *transcriptScan) usedSince(since time.Time) tokens {
+	var u tokens
+	from := since.Unix() / 3600
+	for h, b := range sc.used {
+		if h >= from {
+			u.In += b.In
+			u.Out += b.Out
+		}
+	}
+	return u
+}
+
+// boardStat is what the 8-bit board shows beside a character.
+type boardStat struct {
+	Model string `json:"model,omitempty"`
+	Ctx   int    `json:"ctx,omitempty"`  // context of the last turn, tokens
+	Tool  string `json:"tool,omitempty"` // last tool called
+	Used  tokens `json:"used"`           // tokens in the window
+}
+
 // links counts messages between live sessions over the last ?hours (24).
 func (s *webServer) links(w http.ResponseWriter, r *http.Request) {
 	hours, err := strconv.ParseFloat(r.URL.Query().Get("hours"), 64)
@@ -217,8 +312,9 @@ func (s *webServer) links(w http.ResponseWriter, r *http.Request) {
 	// would write the same maps (fatal "concurrent map writes").
 	linksMu.Lock()
 	edges := linkEdges(all, since, scanTranscript)
+	stats := boardStats(all, since, scanTranscript)
 	linksMu.Unlock()
-	writeJSON(w, map[string]any{"hours": hours, "edges": edges})
+	writeJSON(w, map[string]any{"hours": hours, "edges": edges, "stats": stats})
 }
 
 var linksMu gosync.Mutex
@@ -296,6 +392,123 @@ func linkEdges(all []store.Session, since time.Time, scan func(string) *transcri
 		return out[i].From+out[i].To < out[j].From+out[j].To
 	})
 	return out
+}
+
+// boardStats reads model, context and tokens of every live session. The
+// scans are cached, so after linkEdges this is a map lookup per session.
+func boardStats(all []store.Session, since time.Time, scan func(string) *transcriptScan) map[string]boardStat {
+	out := map[string]boardStat{}
+	for _, x := range all {
+		if !x.Live() || x.TranscriptPath == "" {
+			continue
+		}
+		sc := scan(x.TranscriptPath)
+		if sc.model == "" && sc.ctx == 0 && sc.tool == "" {
+			continue
+		}
+		out[x.ID] = boardStat{Model: sc.model, Ctx: sc.ctx, Tool: sc.tool, Used: sc.usedSince(since)}
+	}
+	return out
+}
+
+// ---- speech bubbles ----
+// What a character says comes from text harness already has; it is cut to
+// one short, plain sentence here so the page never shows markdown, paths
+// or a wall of text. No model is asked.
+
+var (
+	fenceRe    = regexp.MustCompile("(?s)```.*?```|```.*$")
+	mdLinkRe   = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	urlRe      = regexp.MustCompile(`\b[a-z][a-z0-9+.-]*://\S+`)
+	pathRe     = regexp.MustCompile("(?:`[^`]*`)|(?:(?:~|\\.{1,2})?/[\\w.@~-]+(?:/[\\w.@~-]*)+/?)|(?:\\b[\\w.-]+/[\\w./-]+)")
+	markRe     = regexp.MustCompile("[*_`>|]+|(?m)^#+\\s*")
+	parensRe   = regexp.MustCompile(`\(\s*\)`)
+	beforeRe   = regexp.MustCompile(`\s+([,.;:!?])`)
+	bulletRe   = regexp.MustCompile(`(?m)^\s*(?:[-*+•]|\d+[.)])\s+`)
+	spaceRe    = regexp.MustCompile(`\s+`)
+	sentenceRe = regexp.MustCompile(`[.!?…](?:\s|$)`)
+	prRe       = regexp.MustCompile(`(?:PR\s*)?#(\d{2,6})\b`)
+)
+
+// sayMax is the longest line a bubble shows.
+const sayMax = 80
+
+// sayLine turns a message into one bubble: the first sentence, without
+// markdown, code, paths and links, at most sayMax characters.
+func sayLine(text string) string {
+	t := fenceRe.ReplaceAllString(text, " ")
+	t = mdLinkRe.ReplaceAllString(t, "$1")
+	t = urlRe.ReplaceAllString(t, " ")
+	t = bulletRe.ReplaceAllString(t, " ")
+	t = pathRe.ReplaceAllString(t, " ")
+	t = markRe.ReplaceAllString(t, " ")
+	t = parensRe.ReplaceAllString(t, " ")
+	t = beforeRe.ReplaceAllString(t, "$1")
+	t = strings.TrimSpace(spaceRe.ReplaceAllString(t, " "))
+	t = strings.TrimLeft(t, "?> ")
+	// The first sentence. A stop after a short word or a number ("np.",
+	// "1.5 s.") ends it only when a capital letter follows.
+	for _, m := range sentenceRe.FindAllStringIndex(t, -1) {
+		head := t[:m[0]]
+		if i := strings.LastIndexByte(head, ' '); i >= 0 {
+			head = head[i+1:]
+		}
+		if len([]rune(head)) <= 3 || isDigits(head) {
+			rest := strings.TrimSpace(t[m[1]:])
+			if rest != "" && !startsUpper(rest) {
+				continue
+			}
+		}
+		t = strings.TrimSpace(t[:m[0]+1])
+		break
+	}
+	t = strings.TrimSpace(strings.TrimRight(t, ",:;-–"))
+	r := []rune(t)
+	if len(r) > sayMax {
+		cut := sayMax - 1
+		for ; cut > sayMax/2 && r[cut] != ' '; cut-- {
+		}
+		t = strings.TrimRight(string(r[:cut]), " ,:;-–.") + "…"
+	}
+	return t
+}
+
+func startsUpper(s string) bool {
+	r := []rune(s)[0]
+	return unicode.IsUpper(r) || unicode.IsDigit(r)
+}
+
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// sayFor is the bubble of a session: the question when it waits, the
+// prompt it works on, otherwise its last message.
+func sayFor(s store.Session) string {
+	switch {
+	case s.Status == store.Waiting && s.Detail != "":
+		return sayLine(s.Detail)
+	case s.Status == store.Working && s.LastPrompt != "":
+		return sayLine(s.LastPrompt)
+	}
+	return sayLine(s.LastMessage)
+}
+
+// prNumber finds the pull request a session is on: in its name first, then
+// in its last message.
+func prNumber(s store.Session) int {
+	for _, t := range []string{s.Name, s.LastMessage} {
+		if m := prRe.FindStringSubmatch(t); m != nil {
+			n, _ := strconv.Atoi(m[1])
+			return n
+		}
+	}
+	return 0
 }
 
 // ---- live keyboard ----

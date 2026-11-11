@@ -234,7 +234,9 @@ type webSession struct {
 	Shown     bool   `json:"shown"`
 	Running   bool   `json:"running"` // has a live harness pane to type into
 	Resumable bool   `json:"resumable"`
-	Unread    bool   `json:"unread"` // news since you last opened it (see read.go)
+	Unread    bool   `json:"unread"`        // news since you last opened it (see read.go)
+	Say       string `json:"say,omitempty"` // one plain sentence for the 8-bit board (sayFor)
+	PR        int    `json:"pr,omitempty"`  // pull request number from the name or last message
 }
 
 type webState struct {
@@ -300,6 +302,7 @@ func (s *webServer) snapshot() (webState, error) {
 					Shown: x.TmuxPane != "" && x.TmuxPane == shown, Running: live,
 					Resumable: !x.Live() && hasTranscript(x),
 					Unread:    rs.unread(x),
+					Say:       sayFor(x), PR: prNumber(x),
 				})
 				if x.Live() && rs.unread(x) {
 					out.Unread++
