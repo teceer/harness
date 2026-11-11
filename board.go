@@ -419,6 +419,7 @@ func boardStats(all []store.Session, since time.Time, scan func(string) *transcr
 var (
 	fenceRe    = regexp.MustCompile("(?s)```.*?```|```.*$")
 	mdLinkRe   = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
+	tagRe      = regexp.MustCompile(`<[^<>]{0,200}>`)
 	urlRe      = regexp.MustCompile(`\b[a-z][a-z0-9+.-]*://\S+`)
 	pathRe     = regexp.MustCompile("(?:`[^`]*`)|(?:(?:~|\\.{1,2})?/[\\w.@~-]+(?:/[\\w.@~-]*)+/?)|(?:\\b[\\w.-]+/[\\w./-]+)")
 	markRe     = regexp.MustCompile("[*_`>|]+|(?m)^#+\\s*")
@@ -438,6 +439,7 @@ const sayMax = 80
 func sayLine(text string) string {
 	t := fenceRe.ReplaceAllString(text, " ")
 	t = mdLinkRe.ReplaceAllString(t, "$1")
+	t = tagRe.ReplaceAllString(t, " ")
 	t = urlRe.ReplaceAllString(t, " ")
 	t = bulletRe.ReplaceAllString(t, " ")
 	t = pathRe.ReplaceAllString(t, " ")

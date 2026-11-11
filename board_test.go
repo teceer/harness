@@ -113,18 +113,19 @@ func TestBoardStatsOnlyLiveSessionsWithData(t *testing.T) {
 
 func TestSayLine(t *testing.T) {
 	cases := map[string]string{
-		"":          "",
-		"Gotowe.":   "Gotowe.",
-		"Zadanie t153 jest gotowe: PR #1484 jest scalony (`2d0e51079`), a jedną linię z pliku poprawiłem. Dalej idę.": "Zadanie t153 jest gotowe: PR #1484 jest scalony, a jedną linię z pliku…",
-		"**Przekazanie** zapisałem w `/Users/x/.claude/handoffs/96811cec.md` i czekam.":                             "Przekazanie zapisałem w i czekam.",
-		"Utworzyłem plik `forwarded.txt` w katalogu `scratchpad/relay-test` z treścią ok":                             "Utworzyłem plik w katalogu z treścią ok",
-		"Zobacz https://example.com/a/b?x=1 i [dokument](https://x.y/z).":                                             "Zobacz i dokument.",
-		"# Nagłówek\n\n- pierwszy punkt\n- drugi punkt":                                                                "Nagłówek pierwszy punkt drugi punkt",
-		"Np. to działa w 1.5 s. A potem nie.":                                                                          "Np. to działa w 1.5 s.",
-		"```go\nfunc main() {}\n```\nKod skompilowany!":                                                                "Kod skompilowany!",
-		"> napraw testy w module płatności":                                                                            "napraw testy w module płatności",
-		"W toku są dwa zadania w tle:\n- druga recenzja #1480;\n- sprawdzenie mutantów":                               "W toku są dwa zadania w tle: druga recenzja #1480; sprawdzenie mutantów",
-		strings.Repeat("bardzo długie zdanie bez kropki ", 6):                                                          "bardzo długie zdanie bez kropki bardzo długie zdanie bez kropki bardzo długie…",
+		"":        "",
+		"Gotowe.": "Gotowe.",
+		"Zadanie t153 jest gotowe: PR #1484 jest scalony (`2d0e51079`), a jedną linię z pliku poprawiłem. Dalej idę.":                 "Zadanie t153 jest gotowe: PR #1484 jest scalony, a jedną linię z pliku…",
+		"**Przekazanie** zapisałem w `/Users/x/.claude/handoffs/96811cec.md` i czekam.":                                               "Przekazanie zapisałem w i czekam.",
+		"Utworzyłem plik `forwarded.txt` w katalogu `scratchpad/relay-test` z treścią ok":                                             "Utworzyłem plik w katalogu z treścią ok",
+		"Zobacz https://example.com/a/b?x=1 i [dokument](https://x.y/z).":                                                             "Zobacz i dokument.",
+		"# Nagłówek\n\n- pierwszy punkt\n- drugi punkt":                                                                               "Nagłówek pierwszy punkt drugi punkt",
+		"Np. to działa w 1.5 s. A potem nie.":                                                                                         "Np. to działa w 1.5 s.",
+		"```go\nfunc main() {}\n```\nKod skompilowany!":                                                                               "Kod skompilowany!",
+		"<task-notification>\n<task-id>bvcy4pw9o</task-id>\n<status>completed</status>\nAgent skończył recenzję.</task-notification>": "bvcy4pw9o completed Agent skończył recenzję.",
+		"> napraw testy w module płatności":                                                                                           "napraw testy w module płatności",
+		"W toku są dwa zadania w tle:\n- druga recenzja #1480;\n- sprawdzenie mutantów":                                               "W toku są dwa zadania w tle: druga recenzja #1480; sprawdzenie mutantów",
+		strings.Repeat("bardzo długie zdanie bez kropki ", 6):                                                                         "bardzo długie zdanie bez kropki bardzo długie zdanie bez kropki bardzo długie…",
 	}
 	for in, want := range cases {
 		if got := sayLine(in); got != want {
