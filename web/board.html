@@ -783,7 +783,8 @@ function applyView(animate) {
   if (Math.abs(view.k - (applyView.k || 0)) > .02) { applyView.k = view.k; clearTimeout(applyView.h); applyView.h = setTimeout(drawWires, 120); }
 }
 function zoomAt(px, py, k2, animate) {
-  k2 = Math.min(2, Math.max(mode8 ? arcade.minK() : 0.08, k2));
+  // 8-bit sprites stay sharp at any size, so that view zooms in further than the cards.
+  k2 = Math.min(mode8 ? 8 : 2, Math.max(mode8 ? arcade.minK() : 0.08, k2));
   view.x = px - (px - view.x) * (k2 / view.k);
   view.y = py - (py - view.y) * (k2 / view.k);
   view.k = k2;
