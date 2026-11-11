@@ -890,7 +890,7 @@ addEventListener('resize', () => { if (!userMoved) fitAll(); });
 // Sprites live here as text, painted once into small canvases and drawn
 // scaled without smoothing. One requestAnimationFrame loop moves everyone;
 // it stops when the tab is hidden or the cards view is on.
-let mode8 = store.get('board-view', 'cards') === '8bit';
+let mode8 = (new URLSearchParams(location.search).get('view') || store.get('board-view', 'cards')) === '8bit';
 function setMode(eight) {
   mode8 = eight; store.set('board-view', eight ? '8bit' : 'cards');
   document.body.classList.toggle('eightbit', eight);
@@ -986,11 +986,16 @@ function paint(grid, pal) {
   return c;
 }
 const spriteCache = new Map();
+// fi is a running frame counter: the key takes the frame inside the
+// animation, so the cache holds one canvas per frame. Keyed by fi it
+// grew ~20 canvases a second until Dia ran out of GPU memory and the
+// stage flickered between an empty canvas and one without desks.
 function sprite(role, model, anim, fi) {
-  const key = `${role}|${model}|${anim}|${fi}`;
+  const frames = ANIM[anim] || ANIM.stand, f = fi % frames.length;
+  const key = `${role}|${model}|${anim}|${f}`;
   let c = spriteCache.get(key);
   if (c) return c;
-  const frames = ANIM[anim] || ANIM.stand, patch = frames[fi % frames.length];
+  const patch = frames[f];
   let rows = BASE.map((r, i) => patch[i] ?? r);
   const rp = ROLE_PATCH[role];
   if (rp) rows = rows.map((r, i) => rp[i] ?? r);
@@ -1385,17 +1390,25 @@ const arcade = (() => {
   }
 
   // ---- loop ----
+  // ?debug=1 counts what the loop does, so a flicker can be read off a screenshot.
+  const DBG = new URLSearchParams(location.search).has('debug') ? {ticks: 0, resize: 0, ro: 0, layout: 0, err: 0, last: '', live: 0, lost: 0} : null;
+  const dbgEl = DBG && document.body.appendChild(Object.assign(document.createElement('pre'), {style: 'position:fixed;left:8px;bottom:8px;z-index:99;margin:0;padding:6px 8px;background:#000c;color:#7fff7f;font:11px ui-monospace,monospace;pointer-events:none;white-space:pre'}));
   function tick(t) {
     raf = 0;
     if (!on || document.hidden) return;
     now = t;
     const dt = Math.min(64, t - (prev || t));
     prev = t;
-    if (needLayout) { layout(); needLayout = false; }
-    if (L) { update(dt); draw(); }
+    if (DBG) { DBG.ticks++; DBG.live++; setTimeout(() => DBG.live--, 1000); }
+    try {
+      if (needLayout) { layout(); needLayout = false; if (DBG) DBG.layout++; }
+      if (L) { update(dt); draw(); }
+    } catch (e) { if (!DBG) throw e; DBG.err++; DBG.last = String(e && e.stack || e).slice(0, 160); }
+    if (DBG) dbgEl.textContent = `ticks ${DBG.ticks} fps ${DBG.live} resize ${DBG.resize} ro ${DBG.ro} layout ${DBG.layout} err ${DBG.err} sprites ${spriteCache.size} lost ${DBG.lost}\ncv ${cv.width}x${cv.height} css ${cv.clientWidth}x${cv.clientHeight} vp ${vp.getBoundingClientRect().width.toFixed(1)}x${vp.getBoundingClientRect().height.toFixed(1)} dpr ${devicePixelRatio} k ${vw.k.toFixed(2)} S ${L ? L.scale : '-'} ox ${L ? L.ox : '-'},${L ? L.oy : '-'}\n${DBG.last}`;
     raf = requestAnimationFrame(tick);
   }
   function resize() {
+    if (DBG) DBG.resize++;
     dpr = Math.min(2, devicePixelRatio || 1);
     const r = vp.getBoundingClientRect();
     cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
@@ -1404,7 +1417,8 @@ const arcade = (() => {
   function start() { on = true; resize(); prev = 0; if (!raf) raf = requestAnimationFrame(tick); }
   function stop() { on = false; if (raf) cancelAnimationFrame(raf); raf = 0; }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && on && !raf) { prev = 0; raf = requestAnimationFrame(tick); } });
-  new ResizeObserver(() => { if (on) resize(); }).observe(vp);
+  if (DBG) cv.addEventListener('contextlost', () => DBG.lost++);
+  new ResizeObserver(() => { if (DBG) DBG.ro++; if (on) resize(); }).observe(vp);
 
   // ---- pointer: hover makes a character speak, a click opens its session.
   // Pan and zoom are the board's own handlers on #viewport; they call
