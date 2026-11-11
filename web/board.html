@@ -49,6 +49,8 @@
   .dot{flex:none;width:9px;height:9px;border-radius:50%;margin-top:4px;background:var(--idle)}
   .dot.working{background:var(--work);animation:pulse 1.6s infinite}
   .dot.waiting{background:var(--wait)}
+  @keyframes alarm{0%,100%{background:transparent}50%{background:rgba(255,77,77,.35)}}
+  #stats .alarm{animation:alarm 1s steps(2) infinite;border-radius:6px;padding:2px 6px}
   @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(90,208,122,.6)}70%{box-shadow:0 0 0 6px rgba(90,208,122,0)}100%{box-shadow:0 0 0 0 rgba(90,208,122,0)}}
   .title{flex:1;min-width:0}
   .title .task{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -317,7 +319,8 @@ function render() {
     nodes.push({...s, role: r});
   }
   const working = sessions.filter(s => s.status === 'working').length, waiting = sessions.filter(s => s.status === 'waiting').length;
-  $('stats').innerHTML = `<span><b>${sessions.length}</b> sesji</span><span><b style="color:var(--work)">${working}</b> pracuje</span><span><b style="color:var(--wait)">${waiting}</b> czeka</span>`;
+  $('stats').innerHTML = `<span><b>${sessions.length}</b> sesji</span><span><b style="color:var(--work)">${working}</b> pracuje</span><span class="${waiting ? 'alarm' : ''}"><b style="color:var(--wait)">${waiting}</b> czeka</span>`;
+  document.title = waiting ? `(${waiting}!) czeka · Harness Board` : 'Harness Board';
   if (mode8) { // the canvas takes over; only a focused session keeps a terminal stream
     arcade.sync(nodes);
     syncPanes(focusId ? [focusId] : []);
@@ -1214,6 +1217,7 @@ const arcade = (() => {
     for (const f of flights) drawFlight(f, X, Y, S);
     for (const e of fx) drawFx(e, X, Y, S);
     for (const c of list) if (c.bubble) drawBubble(c, X, Y, S);
+    drawOffscreen(list, X, Y, S);
   }
   function drawChar(c, X, Y, S) {
     const edge = c.leaving ? (L.w + SLOT - c.x) / 24 : (c.x + SLOT) / 24;
@@ -1224,6 +1228,7 @@ const arcade = (() => {
     const fi = Math.floor((now + c.bob * 100) / rate);
     const bob = anim === 'walk' ? fi % 2 : anim === 'sleep' ? Math.round(Math.sin(now / 900 + c.bob)) : 0;
     const atDesk = !c.moving && !c.gone;
+    if (c.status === 'waiting' && !c.gone) drawAlarm(px, py, X, Y, S);
     if (atDesk) { g.fillStyle = '#242b3b'; g.fillRect(X(px + 7), Y(py + 11), 10 * S, 4 * S); } // chair back
     const sp = sprite(c.role.col, modelOf(c.id), anim, fi); // wider builds stay centred on the head
     g.drawImage(sp, X(px + 6 - (sp.width - 12) / 2), Y(py + bob), sp.width * S, 20 * S);
@@ -1237,12 +1242,46 @@ const arcade = (() => {
       }
       drawMeta(c, px, py, X, Y, S);
     }
-    if (c.status === 'waiting' && !c.gone) { // bouncing "!"
-      const yy = py - 5 + Math.sin(now / 160) * 1.2;
-      g.fillStyle = '#15151a'; g.fillRect(X(px + 18.5), Y(yy - .5), 3 * S, 9 * S);
-      g.fillStyle = '#ffd33d'; g.fillRect(X(px + 19), Y(yy), 2 * S, 5 * S); g.fillRect(X(px + 19), Y(yy + 6), 2 * S, 2 * S);
+    if (c.status === 'waiting' && !c.gone) { // a big bouncing "!" in a blinking sign above the head
+      const yy = py - 12 + Math.abs(Math.sin(now / 180)) * -3, on = Math.floor(now / 300) % 2;
+      g.fillStyle = '#15151a'; g.fillRect(X(px + 16), Y(yy - 1), 8 * S, 13 * S);
+      g.fillStyle = on ? '#ff4d4d' : '#ffd33d'; g.fillRect(X(px + 16.5), Y(yy - .5), 7 * S, 12 * S);
+      g.fillStyle = '#15151a'; g.fillRect(X(px + 19), Y(yy + 1), 2 * S, 6 * S); g.fillRect(X(px + 19), Y(yy + 8), 2 * S, 2 * S);
+      g.fillStyle = '#15151a'; g.fillRect(X(px + 19), Y(yy + 11.5), 2 * S, 2 * S); // the sign's tail
     }
     g.globalAlpha = 1;
+  }
+  // Waiting for the user must not be missed: a pixel shock wave rings out of the desk every 1.2 s.
+  function drawAlarm(px, py, X, Y, S) {
+    const a0 = g.globalAlpha;
+    for (let k = 0; k < 2; k++) {
+      const t = ((now / 1200) + k / 2) % 1, r = 4 + t * 18;
+      g.globalAlpha = a0 * (1 - t) * .9;
+      g.strokeStyle = t < .5 ? '#ff4d4d' : '#ffd33d'; g.lineWidth = Math.max(2, S * 1.2);
+      g.strokeRect(X(px + 14 - r), Y(py + 9 - r * .7), r * 2 * S, r * 1.4 * S);
+    }
+    g.globalAlpha = a0 * (.18 + .12 * Math.sin(now / 200));
+    g.fillStyle = '#ff4d4d'; g.fillRect(X(px - 1), Y(py - 2), 30 * S, 24 * S);
+    g.globalAlpha = a0;
+  }
+  // Agents waiting outside the visible area get a blinking arrow on the screen edge.
+  function drawOffscreen(list, X, Y, S) {
+    const W = g.canvas.width / dpr, H = g.canvas.height / dpr;
+    const m = 26, on = Math.floor(now / 300) % 2;
+    for (const c of list) {
+      if (c.status !== 'waiting' || c.gone) continue;
+      const cx = X(c.x + 14), cy = Y(c.y + 8);
+      if (cx > 0 && cx < W && cy > 0 && cy < H) continue;
+      const ex = Math.max(m, Math.min(W - m, cx)), ey = Math.max(m, Math.min(H - m, cy));
+      const ang = Math.atan2(cy - ey, cx - ex);
+      g.save(); g.translate(ex, ey);
+      g.fillStyle = on ? '#ff4d4d' : '#ffd33d'; g.strokeStyle = '#15151a'; g.lineWidth = 3;
+      g.beginPath(); g.arc(0, 0, 16, 0, Math.PI * 2); g.fill(); g.stroke();
+      g.fillStyle = '#15151a'; g.font = '900 20px ui-monospace, Menlo, monospace'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText('!', 0, 1);
+      g.rotate(ang); g.fillStyle = on ? '#ff4d4d' : '#ffd33d';
+      g.beginPath(); g.moveTo(26, 0); g.lineTo(16, -8); g.lineTo(16, 8); g.closePath(); g.fill(); g.stroke();
+      g.restore();
+    }
   }
   function drawScreen(c, px, py, X, Y, S) {
     const x0 = px + 19, y0 = py + 11; // the screen is 6×2 inside the monitor frame
