@@ -136,6 +136,21 @@
   .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);padding:8px 14px;border-radius:8px;z-index:50;display:none}
   .lock{max-width:420px;margin:80px auto;padding:16px}
   .lock input{width:100%;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:8px;margin:8px 0}
+  /* ---- KPI strip under the header, the same in both views ---- */
+  .kpi{flex:none;z-index:19;display:flex;flex-wrap:wrap;gap:6px 22px;align-items:baseline;padding:6px 16px;background:rgba(20,25,37,.96);border-bottom:1px solid var(--line);font-size:12px;color:var(--sub);font-variant-numeric:tabular-nums}
+  .kpi .g{display:flex;flex-wrap:wrap;gap:2px 12px;align-items:baseline;min-width:0}
+  .kpi .h{font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
+  .kpi b{color:var(--text);font-weight:600}
+  .kpi .meter{display:inline-block;width:42px;height:5px;border-radius:3px;background:var(--line);vertical-align:middle;margin:0 4px;overflow:hidden}
+  .kpi .meter i{display:block;height:100%;background:var(--work)}
+  .kpi .warn b,.kpi .warn{color:var(--wait)} .kpi .warn .meter i{background:var(--wait)}
+  .kpi .crit b,.kpi .crit{color:var(--err)} .kpi .crit .meter i{background:var(--err)}
+  .kpi .nd{color:var(--dim);font-style:italic}
+  .kpi .old{color:var(--wait)}
+  /* Changing numbers must not rewrap the strip: it would resize the stage. */
+  .kpi .age{display:inline-block;min-width:9.5em}
+  .kpi .rate{display:inline-block;min-width:21em}
+  @media (max-width:900px){.kpi{padding:6px 12px;gap:4px 14px;font-size:11px}}
   /* ---- 8-bit view: one canvas instead of the cards ---- */
   #arcade{position:absolute;inset:0;width:100%;height:100%;display:none;image-rendering:pixelated;image-rendering:crisp-edges;touch-action:none;background:#0b0e15}
   body.eightbit #arcade{display:block}
@@ -157,6 +172,7 @@
   <div class="zoom"><button class="btn" id="zOut" title="Oddal (−)">−</button><span class="pct" id="zPct">100%</span><button class="btn" id="zIn" title="Przybliż (+)">+</button><button class="btn" id="zFit" title="Pokaż wszystkie (F)">Wszystkie</button><button class="btn" id="zRelayout" title="Ułóż od nowa">Ułóż</button><button class="btn" id="panelToggle" title="System, Vercel i lista połączeń (P)">Panel</button></div>
   <div class="stats" id="stats"></div>
 </header>
+<div class="kpi" id="kpi" aria-live="polite"><span class="nd">KPI: ładowanie…</span></div>
 <div id="viewport">
   <div id="world"><svg class="wires" id="wires"></svg></div>
   <canvas id="arcade" aria-label="Agenci jako postacie 8-bit; kliknięcie otwiera sesję"></canvas>
@@ -637,7 +653,8 @@ async function loadLinks() {
     const res = await api('/api/links?hours=' + $('hours').value);
     edges = res.edges || [];
     arcade.setStats(res.stats || {});
-  } catch (e) { edges = []; $('edges').textContent = 'Błąd: ' + e.message; return; }
+    kpiData = res.kpi || null; paintKPI();
+  } catch (e) { edges = []; $('edges').textContent = 'Błąd: ' + e.message; kpiData = null; paintKPI(e.message); return; }
   render();
   arcade.onEdges(edges);
   const list = visiblePairs().slice(0, 12);
@@ -1476,6 +1493,51 @@ const arcade = (() => {
   }
   return {sync, setStats, onEdges, start, stop, setView, minK, click};
 })();
+
+// ---- KPI strip ----
+// Usage of the Claude limits (from the status line), tokens per minute over
+// every session and the time from the first commit to the merge.
+let kpiData = null;
+const kpiTok = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace('.', ',') + 'M' : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(Math.round(n));
+const kpiDur = min => { if (!(min > 0)) return '0 min'; const m = Math.round(min); return m < 60 ? m + ' min' : m < 1440 ? Math.floor(m / 60) + ' h ' + String(m % 60).padStart(2, '0') + ' min' : (m / 1440).toFixed(1).replace('.', ',') + ' d'; };
+const kpiReset = iso => {
+  if (!iso) return '';
+  const d = new Date(iso), s = (d - Date.now()) / 1000;
+  if (s <= 0) return 'reset minął';
+  const t = d.toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit'});
+  return 'reset ' + (s < 86400 && d.getDate() === new Date().getDate() ? t : d.toLocaleDateString('pl-PL', {weekday:'short'}) + ' ' + t);
+};
+const KPI_ACCOUNT = a => a === 'claude' ? '~/.claude' : '~/.' + a;
+function kpiLimit(label, l) {
+  if (!l) return `<span>${label} <span class="nd">brak danych</span></span>`;
+  // The reading is from before the reset: its percentage no longer holds.
+  if (l.resetAt && new Date(l.resetAt) <= Date.now()) return `<span>${label} <span class="nd" title="Limit zresetował się po ostatnim odczycie">po resecie</span></span>`;
+  const p = Math.max(0, Math.min(100, l.pct)), cls = p >= 90 ? 'crit' : p >= 75 ? 'warn' : '';
+  return `<span class="${cls}" title="${esc(l.resetAt ? new Date(l.resetAt).toLocaleString('pl-PL') : '')}">${label}<span class="meter"><i style="width:${p}%"></i></span><b>${Math.round(p)}%</b> ${esc(kpiReset(l.resetAt))}</span>`;
+}
+function paintKPI(err) {
+  const el = $('kpi'), k = kpiData;
+  if (!k) { el.innerHTML = `<span class="nd">KPI: brak danych${err ? ' (' + esc(err) + ')' : ''}</span>`; return; }
+  const nd = why => `<span class="nd" title="${esc(why || '')}">brak danych</span>`;
+  // Usage per account.
+  const usage = (k.usage || []).length ? k.usage.map(u => {
+    const age = Date.now() - new Date(u.at);
+    return `<span class="g"><span>${esc(KPI_ACCOUNT(u.account))}</span>${kpiLimit('5 h', u.fiveHour)}${kpiLimit('tydz.', u.week)}<span class="age ${age > 30 * 60000 ? 'old' : ''}" title="Kiedy status line zapisał odczyt">odczyt ${ago(+new Date(u.at))} temu</span></span>`;
+  }).join('') : nd(k.usageError);
+  // Tokens per minute, 15 and 60 min.
+  const tok = (k.tokens || []).map(r => {
+    const p = r.perMin, all = p.in + p.cache + p.out;
+    return `<span class="rate" title="Ostatnie ${r.minutes} min: wej. ${kpiTok(r.sum.in)}, cache ${kpiTok(r.sum.cache)}, wyj. ${kpiTok(r.sum.out)}">${r.minutes} min <b>${kpiTok(all)}/min</b> · wej. ${kpiTok(p.in)} + cache ${kpiTok(p.cache)} · wyj. ${kpiTok(p.out)}</span>`;
+  }).join('');
+  // Time to merge.
+  const pr = k.prs;
+  const prs = !pr ? nd(k.prsError) : !pr.count
+    ? `<span title="${esc((pr.repos || []).join(', '))}">0 PR scalonych w 24 h</span>`
+    : `<span title="${esc((pr.repos || []).join(', '))} · sprawdzone ${ago(+new Date(pr.checkedAt))} temu"><b>${pr.count}</b> PR / 24 h</span><span title="Od pierwszego commita do merge">commit→merge mediana <b>${kpiDur(pr.medianLead)}</b>, średnia <b>${kpiDur(pr.meanLead)}</b></span><span>PR→merge mediana <b>${kpiDur(pr.medianOpen)}</b></span>`;
+  el.innerHTML = `<span class="g"><span class="h">Usage Claude</span>${usage}</span>`
+    + `<span class="g"><span class="h">Tokeny/min</span>${tok || nd()}</span>`
+    + `<span class="g"><span class="h">Czas realizacji</span>${prs}</span>`;
+}
 
 // ---- Vercel ----
 function ago(ms) {

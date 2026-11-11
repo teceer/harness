@@ -112,6 +112,11 @@ type transcriptScan struct {
 	ctx   int              // context the last turn was sent with (tokens)
 	tool  string           // name of the last tool call
 	used  map[int64]tokens // tokens per hour bucket (unix hour → tokens)
+
+	// For the KPI strip: tokens per minute, only the last kpiKeep of them.
+	perMin map[int64]kpiTokens // unix minute → tokens
+	lastID [8]string           // ids of the last assistant messages counted
+	nextID int
 }
 
 // tokens is what a stretch of a transcript cost in tokens.
@@ -136,6 +141,7 @@ var (
 	handoffRe = regexp.MustCompile(`przeczytaj [^"\\]*handoffs/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.md`)
 
 	modelRe   = regexp.MustCompile(`"model":"(claude-[a-z0-9-]+|[a-z]+)"`)
+	msgIDRe   = regexp.MustCompile(`"id":"(msg_[A-Za-z0-9_-]+)"`)
 	toolUseRe = regexp.MustCompile(`"type":"tool_use","id":"[^"]*","name":"([A-Za-z0-9_]+)"`)
 	usageRe   = regexp.MustCompile(`"usage":\{`)
 	tokRe     = map[string]*regexp.Regexp{
@@ -185,6 +191,7 @@ func scanTranscript(path string) *transcriptScan {
 		scanLine(sc, line)
 	}
 	sc.offset = pos
+	sc.prunePerMin(time.Now())
 	return sc
 }
 
@@ -245,6 +252,18 @@ func scanAssistant(sc *transcriptScan, line string) {
 	if loc == nil {
 		return
 	}
+	// Claude Code writes one line per content block of a message, each
+	// with the message's whole usage: a message counts once. Its lines are
+	// consecutive, so the last few ids are enough.
+	if m := msgIDRe.FindStringSubmatch(line); m != nil {
+		for _, id := range sc.lastID {
+			if id == m[1] {
+				return
+			}
+		}
+		sc.lastID[sc.nextID] = m[1]
+		sc.nextID = (sc.nextID + 1) % len(sc.lastID)
+	}
 	blob := line[loc[1]:min(len(line), loc[1]+400)]
 	n := func(k string) int {
 		if m := tokRe[k].FindStringSubmatch(blob); m != nil {
@@ -272,6 +291,15 @@ func scanAssistant(sc *transcriptScan, line string) {
 	b.In += u.In
 	b.Out += u.Out
 	sc.used[h] = b
+
+	if sc.perMin == nil {
+		sc.perMin = map[int64]kpiTokens{}
+	}
+	mb := sc.perMin[at.Unix()/60]
+	mb.In += n("in") + n("write")
+	mb.Cache += n("read")
+	mb.Out += u.Out
+	sc.perMin[at.Unix()/60] = mb
 }
 
 // usedSince sums the token buckets from since on (whole hours, so the
@@ -313,8 +341,10 @@ func (s *webServer) links(w http.ResponseWriter, r *http.Request) {
 	linksMu.Lock()
 	edges := linkEdges(all, since, scanTranscript)
 	stats := boardStats(all, since, scanTranscript)
+	kpi := boardKPI(all, time.Now(), scanTranscript)
 	linksMu.Unlock()
-	writeJSON(w, map[string]any{"hours": hours, "edges": edges, "stats": stats})
+	kpi.PRs, kpi.PRsE = cachedPRs(all)
+	writeJSON(w, map[string]any{"hours": hours, "edges": edges, "stats": stats, "kpi": kpi})
 }
 
 var linksMu gosync.Mutex
