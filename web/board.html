@@ -1000,12 +1000,30 @@ function sprite(role, model, anim, fi) {
   const rp = ROLE_PATCH[role];
   if (rp) rows = rows.map((r, i) => rp[i] ?? r);
   if (role === 'QA') rows = rows.map(r => r.replace('SESSES', 'WEWWEW'));
-  if (anim === 'sleep') rows = rows.map((r, i) => i <= 5 ? '.' + r.slice(0, 11).replace(/E/g, 'H') : r);
   const grid = [...(HATS[model] || ['............', '............', '............', '............']), ...rows];
   for (const [x, y, ch] of HAT_EXTRA[model] || []) grid[HAT + y] = grid[HAT + y].slice(0, x) + ch + grid[HAT + y].slice(x + 1);
-  c = paint(build(grid, model), {...PAL, ...ROLE_SKIN[role]});
+  const pal = {...PAL, ...ROLE_SKIN[role]};
+  if (anim === 'sleep') { // a sleeper is a shade darker than the ones at work
+    for (const k in pal) if (pal[k]) pal[k] = '#' + [1, 3, 5].map(i => Math.round(parseInt(pal[k].slice(i, i + 2), 16) * .75).toString(16).padStart(2, '0')).join('');
+  }
+  const built = build(grid, model);
+  c = paint(anim === 'sleep' ? asleep(built) : built, pal);
   spriteCache.set(key, c);
   return c;
+}
+// asleep bows a built figure over the desk: the head (with its hat) sinks
+// onto the folded arms just above the desktop (row 15 of the sprite, the
+// desk covers what is below), next to the monitor, eyes shut as lids.
+// It works on the built grid, so every role and model build keeps its
+// own hair, hood, helmet, glasses and width.
+function asleep(g) {
+  const w = g[0].length, blank = '.'.repeat(w), set = (r, x, ch) => r.slice(0, x) + ch + r.slice(x + 1);
+  let lids = g[HAT + 3];
+  for (let x = 1; x < w; x++) if (lids[x] === 'E' && lids[x - 1] === 'S') lids = set(set(lids, x, 'E'), x - 1, 'E');
+  const face = g[HAT + 4], l = face.indexOf('S'), r = face.lastIndexOf('S');
+  const cheek = [...face].map((ch, x) => ch === '.' && x >= l - 2 && x <= r + 2 ? 'D' : ch).join(''); // shoulders beside the bowed head
+  const arms = [...blank].map((_, x) => x === 0 || x === w - 1 ? '.' : x === 1 || x === w - 2 ? 'S' : 'B').join(''); // sleeves folded on the desk, hands at the ends
+  return [blank, blank, blank, blank, blank, ...g.slice(0, HAT), g[HAT], g[HAT + 1], g[HAT + 2], lids, cheek, arms, ...g.slice(HAT + 11)];
 }
 const DESK = [
   '................FFFFFFFF',
@@ -1018,7 +1036,7 @@ const DESK = [
   'll....................ll',
   'll....................ll',
 ];
-const SCREEN = {working:'#0f3a4a', waiting:'#5a4a12', idle:'#1c2436', starting:'#141a26', ended:'#141a26'};
+const SCREEN = {working:'#0f3a4a', waiting:'#5a4a12', idle:'#080b12', starting:'#141a26', ended:'#141a26'};
 const deskCache = {};
 const deskSprite = st => deskCache[st] ??= paint(DESK, {...PAL, s: SCREEN[st] || SCREEN.idle});
 const ENVELOPE = paint(['WWWWWWW', 'WqWWWqW', 'WWqWqWW', 'WWWqWWW', 'WWWWWWW'], PAL);
@@ -1166,7 +1184,10 @@ const arcade = (() => {
         const near = [...chars.values()].some(o => o !== c && o.bubble && Math.abs(o.x - c.x) < SLOT * 2.2 && Math.abs(o.y - c.y) < 60);
         if (near) c.nextSay = now + 1500 + Math.random() * 1500; else say(c, false);
       }
-      if (!c.gone && !c.moving && c.status === 'idle' && now - c.zAt > 1500) { c.zAt = now; fx.push({kind: 'z', x: c.x + 17, y: c.y + 3, t0: now, dur: 2400, big: Math.random() < .3}); }
+      if (!c.gone && !c.moving && c.status === 'idle' && now - c.zAt > 1100) { // "Z z z" rising from the bowed head
+        c.zAt = now; c.zN = ((c.zN || 0) + 1) % 3;
+        fx.push({kind: 'z', x: c.x + 15, y: c.y + 9, t0: now, dur: 3600, n: c.zN});
+      }
     }
     for (let i = fx.length - 1; i >= 0; i--) if (now - fx[i].t0 > fx[i].dur) {
       if (fx[i].kind === 'baton') fx.push({kind: 'ping', c: fx[i].to, t0: now, dur: 700});
@@ -1231,7 +1252,7 @@ const arcade = (() => {
     const anim = c.moving ? 'walk' : c.gone ? 'stand' : {working: 'type', idle: 'sleep', waiting: 'wave'}[c.status] || 'stand';
     const rate = {walk: 150, type: 170, wave: 280}[anim] || 500;
     const fi = Math.floor((now + c.bob * 100) / rate);
-    const bob = anim === 'walk' ? fi % 2 : anim === 'sleep' ? Math.round(Math.sin(now / 900 + c.bob)) : 0;
+    const bob = anim === 'walk' ? fi % 2 : 0;
     const atDesk = !c.moving && !c.gone;
     if (c.status === 'waiting' && !c.gone) drawAlarm(px, py, X, Y, S);
     if (atDesk) { g.fillStyle = '#242b3b'; g.fillRect(X(px + 7), Y(py + 11), 10 * S, 4 * S); } // chair back
@@ -1299,7 +1320,10 @@ const arcade = (() => {
       }
     } else if (c.status === 'waiting') {
       if (Math.floor(now / 350) % 2) { g.fillStyle = '#ffd33d'; g.fillRect(X(x0), Y(y0), 6 * S, 2 * S); }
-    } else if (c.status === 'idle' && Math.floor(now / 600) % 2) { g.fillStyle = '#7ff3ff'; g.fillRect(X(x0), Y(y0), S, S); }
+    } else if (c.status === 'idle') { // screensaver: one dim dot drifting across the dark screen
+      const t = (now / 900 + hashOf(c.id) % 10) % 10, x = t < 5 ? t : 10 - t; // 0…5 and back
+      g.fillStyle = '#3f7d99'; g.fillRect(X(x0 + Math.floor(x)), Y(y0 + (Math.floor(now / 2700 + hashOf(c.id)) % 2)), S, S);
+    }
   }
   function drawMeta(c, px, py, X, Y, S) {
     const st = statsById[c.id];
@@ -1345,8 +1369,11 @@ const arcade = (() => {
   function drawFx(e, X, Y, S) {
     const t = (now - e.t0) / e.dur;
     if (e.kind === 'z') {
-      g.globalAlpha = 1 - t; g.fillStyle = '#9cc0ff'; g.font = `700 ${e.big ? 14 : 10}px ui-monospace, Menlo, monospace`; g.textBaseline = 'alphabetic';
-      g.fillText(e.big ? 'Z' : 'z', X(e.x + t * 5), Y(e.y - t * 9)); g.globalAlpha = 1;
+      // each letter grows as it rises and fades out; the first of three is a capital
+      const size = Math.max(9, (4 + t * 5) * S * (e.n === 0 ? 1.25 : 1)), sway = Math.sin(t * 6 + e.n) * 1.5;
+      g.globalAlpha = Math.max(0, 1 - t) * (t < .1 ? t * 10 : 1); g.fillStyle = '#b4cdff';
+      g.font = `700 ${Math.round(size)}px ui-monospace, Menlo, monospace`; g.textBaseline = 'alphabetic';
+      g.fillText(e.n === 0 ? 'Z' : 'z', X(e.x + t * 8 + sway), Y(e.y - t * 16)); g.globalAlpha = 1;
     } else if (e.kind === 'ping') { // a pixel ring spreading from the head
       const cx = X(e.c.x + 12), cy = Y(e.c.y + 4), r = (2 + t * 7) * S;
       g.globalAlpha = 1 - t; g.fillStyle = '#ffffff';

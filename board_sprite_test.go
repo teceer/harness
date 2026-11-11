@@ -13,7 +13,8 @@ import (
 // grows with time (the running frame counter) made a new canvas each
 // animation frame, ~20 a second, until Dia ran out of GPU memory and the
 // stage flickered. This runs the real sprite code from board.html in node
-// over thousands of frames: the cache must stay at one canvas per frame.
+// over thousands of frames: the cache must stay at one canvas per frame,
+// and every sprite, the bowed sleeper too, keeps the 20-row frame.
 func TestBoardSpriteCacheStaysBounded(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -36,6 +37,8 @@ const roles = Object.keys(ROLE_SKIN), models = ['', ...MODELS], anims = Object.k
 for (let fi = 0; fi < 5000; fi++)
   for (const r of roles) for (const m of models) for (const a of anims) sprite(r, m, a, fi);
 const frames = anims.reduce((n, a) => n + ANIM[a].length, 0);
+const bad = [...spriteCache].filter(([, c]) => c.height !== 20 || (c.width !== 12 && c.width !== 14)).map(([k, c]) => k + '=' + c.width + 'x' + c.height);
+if (bad.length) { console.log('BAD', bad.join(' ')); process.exit(0); }
 console.log(spriteCache.size, roles.length * models.length * frames);
 `
 	path := filepath.Join(t.TempDir(), "sprite.js")
@@ -45,6 +48,9 @@ console.log(spriteCache.size, roles.length * models.length * frames);
 	out, err := exec.Command(node, path).CombinedOutput()
 	if err != nil {
 		t.Fatalf("node: %v\n%s", err, out)
+	}
+	if strings.HasPrefix(string(out), "BAD") {
+		t.Fatalf("sprites must be 20 rows of 12 or 14 px (the desk and the layout assume it): %s", out)
 	}
 	f := strings.Fields(string(out))
 	if len(f) != 2 {
