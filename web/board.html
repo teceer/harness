@@ -1,0 +1,981 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness Board</title>
+<style>
+  :root{
+    --bg:#0d1017;--panel:#141925;--card:#1a2030;--line:#262e42;--text:#dfe5f1;--sub:#8b95ab;--dim:#5d667b;
+    --work:#5ad07a;--wait:#ffb547;--idle:#6b7489;--err:#ff6b6b;--accent:#7aa2ff;
+    --pm:#c792ea;--dev:#7aa2ff;--qa:#4fd6be;--other:#8b95ab;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--text);font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  button,select,textarea,input{font:inherit;color:inherit}
+  body{display:flex;flex-direction:column}
+  header{flex:none;z-index:20;display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:8px 16px;background:rgba(13,16,23,.94);border-bottom:1px solid var(--line)}
+  header h1{font-size:15px;margin:0 8px 0 0;font-weight:600}
+  header label{display:flex;gap:6px;align-items:center;color:var(--sub)}
+  select,.btn{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:4px 8px;cursor:pointer}
+  .btn:hover{border-color:var(--accent)}
+  .btn.primary{background:var(--accent);color:#0d1017;border-color:var(--accent);font-weight:600}
+  .zoom{display:flex;gap:4px;align-items:center}
+  .zoom .pct{min-width:44px;text-align:center;color:var(--sub);font-variant-numeric:tabular-nums}
+  .stats{margin-left:auto;color:var(--sub);display:flex;gap:12px}
+  .stats b{color:var(--text)}
+
+  /* ---- canvas ---- */
+  #viewport{position:relative;flex:1;min-height:0;overflow:hidden;cursor:grab;touch-action:none;
+    background-color:var(--bg);background-image:radial-gradient(rgba(139,149,171,.16) 1px,transparent 1px)}
+  #viewport.panning{cursor:grabbing}
+  #world{position:absolute;left:0;top:0;width:0;height:0;transform-origin:0 0}
+  #world.anim .card{transition:transform .35s ease,opacity .15s,border-color .15s}
+  .rowlabel{position:absolute;font-size:calc(22px * var(--z,1));font-weight:700;letter-spacing:.08em;color:var(--c);opacity:.55;white-space:nowrap;transform:translate(-100%,0);padding-right:28px;pointer-events:none}
+  .rowlabel .n{color:var(--dim);font-weight:500;margin-left:6px}
+  svg.wires{position:absolute;overflow:visible;pointer-events:none}
+  svg.wires path.e{fill:none;stroke-linecap:round;stroke-linejoin:round}
+  svg.wires path.hit{fill:none;stroke:transparent;stroke-width:18px;pointer-events:stroke;cursor:pointer}
+  svg.wires .lbl rect{fill:var(--panel);stroke:var(--line)}
+  svg.wires .lbl text{font-size:12px;font-weight:600;fill:var(--text);font-variant-numeric:tabular-nums}
+  svg.wires .lbl.on rect{stroke:var(--accent)}
+  svg.wires .faded{opacity:.12}
+
+  .card{position:absolute;left:0;top:0;width:380px;height:var(--ch,344px);display:flex;flex-direction:column;z-index:2;background:var(--card);border:1px solid var(--line);border-left:3px solid var(--c);border-radius:8px;overflow:hidden;cursor:default}
+  .card.dim{opacity:.3}
+  .card.live{border-color:var(--work);box-shadow:0 0 0 2px color-mix(in srgb,var(--work) 45%,transparent)}
+  .card.hl{border-color:var(--accent);box-shadow:0 0 0 2px color-mix(in srgb,var(--accent) 40%,transparent)}
+  .card .top{display:flex;gap:8px;align-items:flex-start;padding:8px 10px 4px}
+  .dot{flex:none;width:9px;height:9px;border-radius:50%;margin-top:4px;background:var(--idle)}
+  .dot.working{background:var(--work);animation:pulse 1.6s infinite}
+  .dot.waiting{background:var(--wait)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(90,208,122,.6)}70%{box-shadow:0 0 0 6px rgba(90,208,122,0)}100%{box-shadow:0 0 0 0 rgba(90,208,122,0)}}
+  .title{flex:1;min-width:0}
+  .title .task{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .title .meta{color:var(--sub);font-size:11px;display:flex;gap:8px;white-space:nowrap;overflow:hidden}
+  .chip{font-size:10px;font-weight:700;padding:1px 6px;border-radius:4px;background:color-mix(in srgb,var(--c) 22%,transparent);color:var(--c);flex:none}
+  .snippet{padding:0 10px 6px;color:var(--sub);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .snippet.waiting{color:var(--wait)}
+  .term{flex:none;height:var(--th,190px);background:#05070b;border-top:1px solid var(--line);border-bottom:1px solid var(--line);overflow:hidden;cursor:text;position:relative}
+  /* The pane's whole cell grid, scaled to fit (fitPre): nothing is cut off. */
+  .term pre,dialog .big pre{margin:0;padding:6px 8px;font:8.5px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;position:absolute;left:0;top:0;overflow:hidden;transform-origin:0 0;color:#c9d1e0}
+  .open{flex:none;background:transparent;border:1px solid var(--line);border-radius:4px;color:var(--sub);cursor:pointer;padding:0 6px;font-size:13px;line-height:18px}
+  .open:hover{color:var(--text);border-color:var(--accent)}
+  .livehint{color:var(--work);font-size:11px;padding:0 10px 8px;display:none}
+  .card.live .livehint{display:block}
+  #kbd{position:fixed;left:0;bottom:0;width:1px;height:1px;opacity:0;border:0;padding:0;resize:none;z-index:-1}
+  .term .none{color:var(--dim);padding:10px;font-size:12px}
+  .links-line{padding:6px 10px 0;font-size:11px;color:var(--sub);display:flex;gap:4px 10px;white-space:nowrap;overflow:hidden;height:23px}
+  .links-line span{cursor:pointer}
+  .links-line span:hover{color:var(--text)}
+  .keys{display:flex;gap:4px;padding:6px 10px 8px;flex-wrap:wrap}
+  .keys button{background:transparent;border:1px solid var(--line);border-radius:4px;padding:1px 7px;font-size:11px;color:var(--sub);cursor:pointer}
+  .keys button:hover{color:var(--text);border-color:var(--accent)}
+  /* Zoomed out: the terminal is unreadable, a big name is not. */
+  .card .lod{display:none;position:absolute;inset:0;flex-direction:column;justify-content:center;gap:10px;padding:24px 28px;background:var(--card);cursor:zoom-in}
+  .card .lod .tag{font-size:30px;font-weight:800;color:var(--c)}
+  .card .lod .name{font-size:34px;font-weight:700;line-height:1.15;overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow-wrap:anywhere}
+  .card .lod .st{font-size:24px;color:var(--sub);display:flex;gap:12px;align-items:center}
+  .card .lod .st .dot{width:20px;height:20px;margin:0}
+  .card .lod .st.waiting{color:var(--wait)}
+  #world.far .card .lod{display:flex}
+
+  /* ---- side panel floating over the canvas ---- */
+  aside{position:absolute;top:12px;right:12px;bottom:12px;width:320px;z-index:10;display:flex;flex-direction:column;gap:12px;overflow:auto;pointer-events:none}
+  aside > *{pointer-events:auto}
+  aside.hidden{display:none}
+  .panel{background:rgba(20,25,37,.96);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+  .panel h3{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--sub);display:flex;justify-content:space-between}
+  .dep{display:grid;grid-template-columns:10px 1fr auto;gap:2px 8px;padding:6px 0;border-top:1px solid var(--line);align-items:baseline}
+  .dep:first-of-type{border-top:0}
+  .dep .s{width:8px;height:8px;border-radius:50%;background:var(--idle);align-self:center}
+  .dep .s.BUILDING,.dep .s.INITIALIZING{background:var(--wait);animation:blink 1s infinite}
+  .dep .s.QUEUED{background:var(--accent)}
+  .dep .s.READY{background:var(--work)}
+  .dep .s.ERROR{background:var(--err)}
+  @keyframes blink{50%{opacity:.3}}
+  .dep .p{font-weight:600}
+  .dep .p .prod{color:var(--wait);font-weight:700;font-size:10px;margin-left:4px}
+  .dep .t{color:var(--sub);font-size:11px;text-align:right}
+  .dep .c{grid-column:2/4;color:var(--sub);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .dep a{color:inherit;text-decoration:none}
+  .dep a:hover{text-decoration:underline}
+  .edge-row{display:flex;justify-content:space-between;gap:8px;padding:3px 0;font-size:12px;cursor:pointer}
+  .edge-row:hover{color:var(--accent)}
+  .edge-row .n{color:var(--sub)}
+  .muted{color:var(--dim);font-size:12px}
+  /* ---- system panel: one tile per measure, each with its own axis ---- */
+  .sys{display:grid;grid-template-columns:1fr 1fr;gap:10px 12px}
+  .sys .tile{min-width:0}
+  .sys .k{font-size:11px;color:var(--sub);display:flex;justify-content:space-between;gap:6px}
+  .sys .v{font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sys .v small{font-size:11px;font-weight:400;color:var(--sub);margin-left:3px}
+  .sys .v .warn{color:var(--wait);font-size:11px;font-weight:600;margin-left:4px}
+  .sys .v .crit{color:var(--err);font-size:11px;font-weight:600;margin-left:4px}
+  .sys svg{display:block;width:100%;height:34px;margin-top:2px;overflow:visible;cursor:crosshair}
+  .sys .ln{fill:none;stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round}
+  .sys .ar{opacity:.14}
+  .sys .gr{stroke:var(--line);stroke-width:1}
+  .sys .xh{stroke:var(--sub);stroke-width:1;stroke-dasharray:2 2}
+  .sys .sub{font-size:11px;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+  .sys .lg{display:flex;gap:8px;font-size:11px;color:var(--sub)}
+  .sys .lg i{display:inline-block;width:8px;height:2px;border-radius:1px;vertical-align:middle;margin-right:3px}
+  .hint{position:absolute;left:12px;bottom:10px;z-index:5;color:var(--dim);font-size:11px;pointer-events:none}
+  dialog{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:0;width:min(1200px,96vw);height:min(860px,92vh)}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  dialog .wrap{display:flex;flex-direction:column;height:100%}
+  dialog .hd{display:flex;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+  dialog .hd .task{font-weight:600;flex:1}
+  dialog .big{flex:1;min-height:0;background:#05070b;overflow:hidden;position:relative;cursor:text}
+  dialog .big pre{font-size:12px;line-height:1.3;padding:10px 12px}
+  dialog .live{padding:8px 14px 12px;color:var(--sub);font-size:12px;display:flex;gap:8px;align-items:center}
+  dialog .live .on{color:var(--work);font-weight:600;white-space:nowrap}
+  dialog .live .off{color:var(--wait);font-weight:600}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--card);border:1px solid var(--line);padding:8px 14px;border-radius:8px;z-index:50;display:none}
+  .lock{max-width:420px;margin:80px auto;padding:16px}
+  .lock input{width:100%;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:8px;margin:8px 0}
+  @media (max-width:900px){header{padding:8px 12px}aside{left:12px;width:auto;top:auto;max-height:45%}.hint{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Harness Board</h1>
+  <label>Profil <select id="profile"></select></label>
+  <label>Okno <select id="hours"><option value="1">1 h</option><option value="6">6 h</option><option value="24" selected>24 h</option><option value="72">3 dni</option></select></label>
+  <label><input type="checkbox" id="wireToggle" checked> połączenia</label>
+  <label><input type="checkbox" id="showIdle"> bezczynne bez roli i taska</label>
+  <div class="zoom"><button class="btn" id="zOut" title="Oddal (−)">−</button><span class="pct" id="zPct">100%</span><button class="btn" id="zIn" title="Przybliż (+)">+</button><button class="btn" id="zFit" title="Pokaż wszystkie (F)">Wszystkie</button><button class="btn" id="zRelayout" title="Ułóż od nowa">Ułóż</button><button class="btn" id="panelToggle" title="System, Vercel i lista połączeń (P)">Panel</button></div>
+  <div class="stats" id="stats"></div>
+</header>
+<div id="viewport">
+  <div id="world"><svg class="wires" id="wires"></svg></div>
+  <aside id="aside">
+    <section class="panel"><h3>System <span id="sysAt" class="muted"></span></h3><div id="sys" class="sys muted">Ładowanie…</div></section>
+    <section class="panel"><h3>Vercel <span id="vAt" class="muted"></span></h3><div id="vercel" class="muted">Ładowanie…</div></section>
+    <section class="panel"><h3>Najczęstsze połączenia</h3><div id="edges" class="muted">Ładowanie…</div></section>
+  </aside>
+  <div class="hint">Przeciągnij tło, aby przesunąć · kółko lub dwa palce przesuwają · Ctrl/⌘ + kółko lub szczypanie przybliża · F pokazuje wszystkie</div>
+</div>
+<dialog id="dlg"><div class="wrap">
+  <div class="hd"><span class="chip" id="dChip"></span><span class="task" id="dTask"></span><span class="muted" id="dMeta"></span><button class="btn" id="dClose">Zamknij</button></div>
+  <div class="big" id="dBig"><pre id="dPre"></pre></div>
+  <div class="keys" id="dKeys"></div>
+  <div class="live" id="dLive"></div>
+</div></dialog>
+<!-- Receives live typing (keys, IME, diacritics, paste, the phone keyboard) for the pane in liveId. -->
+<textarea id="kbd" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" aria-label="Klawiatura sesji"></textarea>
+<div class="toast" id="toast"></div>
+
+<script>
+const token = new URLSearchParams(location.search).get('t') || localStorage.getItem('harness-token') || '';
+if (token) localStorage.setItem('harness-token', token);
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const store = {get(k,d){try{return localStorage.getItem(k) ?? d}catch{return d}}, set(k,v){try{localStorage.setItem(k,v)}catch{}}};
+
+// Rows of the canvas, top to bottom. PM sits between DEV and QA: it talks
+// to both, so most links join neighbouring rows.
+const ROWS = [
+  {key:'DEV', title:'DEV', c:'var(--dev)'},
+  {key:'PM', title:'PM', c:'var(--pm)'},
+  {key:'QA', title:'QA', c:'var(--qa)'},
+  {key:'OTHER', title:'Pozostałe', c:'var(--other)'},
+];
+const COLOR = Object.fromEntries(ROWS.map(r => [r.key, r.c]));
+const KEYS = ['Enter','Escape','1','2','3','y','n','Up','Down'];
+const STATUS_PL = {working:'pracuje', waiting:'czeka na Ciebie', idle:'bezczynna', starting:'startuje'};
+const CW = 380, GX = 70, GY = 200, GL = 60; // card width, gaps between cards, rows and wrapped lines (world px)
+let CH = 344;                                 // card height, follows the panes' aspect (sizeCards)
+const FAR = 0.5;                              // below this zoom cards show a big name
+
+let state = {sessions:[], profiles:[]};
+let edges = [];
+let panes = {};           // id → html
+let paneES = null, paneKey = '';
+let focusId = null;
+let hoverId = null, hoverPartner = null;
+let nodes = [];           // visible sessions with their role
+let pos = {};             // id → {x, y, ri}: top-left corner in world px
+let rows = [];            // laid-out rows that have cards
+let layoutSig = '';
+let view = {x: 0, y: 0, k: 1};
+let userMoved = false;    // after a manual pan or zoom the view stays put
+
+if (!token) {
+  document.body.innerHTML = `<div class="lock"><h2>Harness Board</h2><p class="muted">Podaj token z <code>harness serve</code> (parametr ?t=).</p><input id="tk" placeholder="token"><button class="btn primary" id="tkGo">Otwórz</button></div>`;
+  $('tkGo').onclick = () => { location.search = '?t=' + encodeURIComponent($('tk').value.trim()); };
+  throw new Error('no token');
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {...opts, headers:{...(opts.headers||{}), 'Authorization':'Bearer '+token, 'Content-Type':'application/json'}});
+  if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+  return res.json();
+}
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.h); toast.h = setTimeout(() => t.style.display = 'none', 2500); }
+
+function parseRole(label) {
+  const m = /^\s*\[(PM|DEV|QA(?:-\d+)?)\]\s*(.*)$/i.exec(label || '');
+  if (!m) return {col:'OTHER', tag:'', task:label || ''};
+  const tag = m[1].toUpperCase();
+  return {col: tag.startsWith('QA') ? 'QA' : tag, tag, task: m[2] || '(bez taska)'};
+}
+function isFree(task) { return /\b(wolny|wolna|core11)\s*$/i.test(task) || task === '(bez taska)'; }
+function liveSessions() {
+  const prof = $('profile').value;
+  return state.sessions.filter(s => s.running && !['archived','ended'].includes(s.status) && (!prof || s.profile === prof));
+}
+function base(dir) { return (dir || '').split('/').filter(Boolean).pop() || dir; }
+
+// ---- layout ----
+// Layered layout: one row per role, cards inside a row ordered by the
+// barycentre of their partners in other rows (a few sweeps down and up),
+// which keeps links short and mostly uncrossed.
+function computeLayout(list, ps) {
+  const rs = ROWS.map(r => ({...r, items: list.filter(n => n.role.col === r.key)})).filter(r => r.items.length);
+  rs.forEach((r, ri) => {
+    r.items.sort((a, b) => a.role.tag.localeCompare(b.role.tag, 'pl', {numeric:true}) || (a.label || '').localeCompare(b.label || '', 'pl', {numeric:true}) || a.id.localeCompare(b.id));
+    r.items.forEach((n, i) => { n.ri = ri; n.slot = i; });
+  });
+  const adj = {};
+  for (const p of ps) {
+    const w = p.ab + p.ba;
+    (adj[p.a] ??= []).push({id: p.b, w});
+    (adj[p.b] ??= []).push({id: p.a, w});
+  }
+  const byId = Object.fromEntries(list.map(n => [n.id, n]));
+  const cx = n => n.slot - (rs[n.ri].items.length - 1) / 2;
+  for (let it = 0; it < 8; it++) {
+    const order = it % 2 ? [...rs].reverse() : rs;
+    for (const r of order) {
+      const key = {};
+      for (const n of r.items) {
+        let sw = 0, sx = 0;
+        for (const e of adj[n.id] || []) {
+          const m = byId[e.id];
+          if (!m || m.ri === n.ri) continue;
+          const w = Math.log2(1 + e.w);
+          sw += w; sx += w * cx(m);
+        }
+        key[n.id] = sw ? sx / sw : cx(n);
+      }
+      r.items.sort((a, b) => key[a.id] - key[b.id] || a.slot - b.slot);
+      r.items.forEach((n, i) => n.slot = i);
+    }
+  }
+  // A long row wraps into lines. Cards with links to other rows go to the
+  // line facing those rows (the bottom one for the top row, the top one for
+  // the rest), the others fill the lines behind them.
+  const out = {};
+  let y = 0;
+  rs.forEach((r, ri) => {
+    const n = r.items.length, cols = n <= 10 ? n : Math.ceil(Math.sqrt(n * 2.2));
+    const linked = r.items.filter(x => (adj[x.id] || []).some(e => byId[e.id] && byId[e.id].ri !== ri));
+    const rest = r.items.filter(x => !linked.includes(x));
+    const lines = [];
+    for (const x of [...linked, ...rest]) {
+      if (!lines.length || lines[lines.length - 1].length === cols) lines.push([]);
+      lines[lines.length - 1].push(x);
+    }
+    if (ri === 0 && rs.length > 1) lines.reverse();
+    r.y = y;
+    lines.forEach((line, li) => line.forEach((x, i) => {
+      out[x.id] = {x: (i - (line.length - 1) / 2) * (CW + GX) - CW / 2, y: y + li * (CH + GL), ri};
+    }));
+    y += lines.length * (CH + GL) - GL + GY;
+  });
+  return {rows: rs, pos: out};
+}
+
+function worldBox(ids) {
+  const list = (ids || Object.keys(pos)).map(id => pos[id]).filter(Boolean);
+  if (!list.length) return null;
+  const x0 = Math.min(...list.map(p => p.x)), y0 = Math.min(...list.map(p => p.y));
+  const x1 = Math.max(...list.map(p => p.x + CW)), y1 = Math.max(...list.map(p => p.y + CH));
+  return {x0, y0, x1, y1};
+}
+
+// ---- board ----
+function render() {
+  const sessions = liveSessions();
+  const showIdle = $('showIdle').checked;
+  nodes = [];
+  for (const s of sessions) {
+    const r = parseRole(s.label);
+    if (!showIdle && s.status === 'idle' && (r.col === 'OTHER' || isFree(r.task))) continue;
+    nodes.push({...s, role: r});
+  }
+  const world = $('world');
+  const keep = new Set(nodes.map(n => n.id));
+  for (const n of nodes) {
+    let card = document.getElementById('card-' + n.id);
+    if (!card) { card = makeCard(n); world.appendChild(card); }
+    card.style.setProperty('--c', COLOR[n.role.col]);
+    updateCard(card, n);
+  }
+  world.querySelectorAll('.card').forEach(c => { if (!keep.has(c.dataset.id)) c.remove(); });
+
+  const ps = visiblePairs();
+  const sig = [...keep].sort().join(',') + '|' + ps.map(p => p.a + p.b).join(',');
+  if (sig !== layoutSig) { layoutSig = sig; relayout(); }
+
+  const working = sessions.filter(s => s.status === 'working').length, waiting = sessions.filter(s => s.status === 'waiting').length;
+  $('stats').innerHTML = `<span><b>${sessions.length}</b> sesji</span><span><b style="color:var(--work)">${working}</b> pracuje</span><span><b style="color:var(--wait)">${waiting}</b> czeka</span>`;
+  syncPanes([...keep]);
+  drawWires();
+}
+
+function relayout() {
+  const first = !Object.keys(pos).length;
+  const res = computeLayout(nodes, visiblePairs());
+  rows = res.rows; pos = res.pos;
+  const world = $('world');
+  if (!first) { world.classList.add('anim'); clearTimeout(relayout.h); relayout.h = setTimeout(() => world.classList.remove('anim'), 400); }
+  for (const n of nodes) {
+    const p = pos[n.id], card = document.getElementById('card-' + n.id);
+    if (card) card.style.transform = `translate(${p.x}px,${p.y}px)`;
+  }
+  world.querySelectorAll('.rowlabel').forEach(l => l.remove());
+  rows.forEach(r => {
+    const x0 = Math.min(...r.items.map(n => pos[n.id].x));
+    world.insertAdjacentHTML('beforeend', `<div class="rowlabel" style="--c:${r.c};left:${x0}px;top:${r.y + 8}px">${r.title}<span class="n">${r.items.length}</span></div>`);
+  });
+  if (!userMoved) fitAll(!first);
+}
+
+function makeCard(s) {
+  const card = document.createElement('article');
+  card.className = 'card'; card.id = 'card-' + s.id; card.dataset.id = s.id;
+  card.innerHTML = `
+    <div class="top"><span class="dot"></span><div class="title"><div class="task"></div><div class="meta"></div></div><span class="chip"></span><button class="open" title="Otwórz konsolę w dużym oknie">⤢</button></div>
+    <div class="snippet"></div>
+    <div class="term" title="Kliknij i pisz: klawiatura idzie prosto do sesji. Podwójny klik otwiera duże okno."><pre></pre></div>
+    <div class="links-line"></div>
+    <div class="keys">${['Enter','Escape','1','2','y'].map(k => `<button data-k="${k}">${k === 'Escape' ? 'Esc' : k}</button>`).join('')}</div>
+    <div class="livehint">Klawiatura na żywo · kliknij tło, aby przestać</div>
+    <div class="lod" title="Kliknij, aby przybliżyć"><div class="tag"></div><div class="name"></div><div class="st"><span class="dot"></span><span class="stt"></span></div></div>`;
+  card.querySelectorAll('.keys button').forEach(b => b.onclick = () => sendKey(s.id, b.dataset.k));
+  const term = card.querySelector('.term');
+  term.onclick = e => { e.stopPropagation(); startLive(s.id); };
+  term.ondblclick = () => openFocus(s.id);
+  card.querySelector('.open').onclick = () => openFocus(s.id);
+  card.addEventListener('mouseenter', () => { hoverId = s.id; hoverPartner = null; drawWires(); });
+  card.addEventListener('mouseleave', () => { hoverId = null; drawWires(); });
+  return card;
+}
+
+function updateCard(card, s) {
+  card.querySelectorAll('.dot').forEach(d => d.className = 'dot ' + s.status);
+  card.querySelector('.task').textContent = s.role.task || s.label;
+  card.querySelector('.task').title = s.role.task || s.label || '';
+  const chip = card.querySelector('.chip');
+  chip.textContent = s.role.tag || base(s.dir);
+  card.querySelector('.meta').innerHTML = `<span>${esc(STATUS_PL[s.status] || s.status)}${s.detail ? ' · ' + esc(s.detail) : ''}</span><span>${esc(s.age)}</span><span>${esc(base(s.dir))}</span><span title="${esc(s.id)}">${esc(s.id.slice(0,8))}</span>`;
+  const sn = card.querySelector('.snippet');
+  sn.textContent = s.snippet || ''; sn.className = 'snippet' + (s.status === 'waiting' ? ' waiting' : '');
+  sn.title = s.snippet || '';
+  card.querySelector('.lod .tag').textContent = s.role.tag || base(s.dir);
+  card.querySelector('.lod .name').textContent = s.role.task || s.label;
+  card.querySelector('.lod .st').className = 'st' + (s.status === 'waiting' ? ' waiting' : '');
+  card.querySelector('.lod .stt').textContent = (STATUS_PL[s.status] || s.status) + (s.age ? ' · ' + s.age : '');
+  if (panes[s.id] !== undefined) paintTerm(card, panes[s.id]);
+  else if (!card.querySelector('.term pre').innerHTML) card.querySelector('.term pre').innerHTML = '<span class="none">Łączenie z konsolą…</span>';
+  const mine = edgesOf(s.id).slice(0, 5);
+  card.querySelector('.links-line').innerHTML = mine.length ? '↔ ' + mine.map(e => `<span data-id="${e.other}" title="${e.out} wysłanych, ${e.in} odebranych">${esc(shortName(e.other))} ${e.out + e.in}</span>`).join('') : '';
+  card.querySelectorAll('.links-line span').forEach(sp => sp.onclick = () => fitIds([s.id, sp.dataset.id]));
+}
+
+function paintTerm(card, p) {
+  const box = card.querySelector('.term'), pre = box.querySelector('pre');
+  if (pre.dataset.html !== p.html) { pre.innerHTML = p.html; pre.dataset.html = p.html; }
+  fitPre(box, pre, p);
+}
+
+// Monospace cell size for a font size, measured once.
+const cells = {};
+function cell(px, lh) {
+  const k = px + '/' + lh;
+  if (!cells[k]) {
+    const m = document.createElement('pre');
+    m.style.cssText = `position:absolute;visibility:hidden;margin:0;padding:0;font:${px}px/${lh} ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre`;
+    m.textContent = 'M'.repeat(200) + '\n' + 'M';
+    document.body.appendChild(m);
+    cells[k] = {w: m.getBoundingClientRect().width / 200, h: m.getBoundingClientRect().height / 2};
+    m.remove();
+  }
+  return cells[k];
+}
+// The pane's natural size in px: its cell grid plus the pre's padding.
+function natural(pre, p) {
+  const cs = getComputedStyle(pre), px = parseFloat(cs.fontSize), lh = parseFloat(cs.lineHeight) / px || 1.25;
+  const c = cell(px, lh), padX = parseFloat(cs.paddingLeft) * 2, padY = parseFloat(cs.paddingTop) * 2;
+  const cols = p.cols || 120, rows = p.rows || (p.html.split('\n').length);
+  return {w: Math.ceil(cols * c.w + padX), h: Math.ceil(rows * c.h + padY)};
+}
+// Scales the grid into box. contain: the whole grid, centred (focus window).
+// Cards fit the width and, when the pane is taller than the card, show its
+// bottom rows, where the session is working; columns are never cut.
+function fitPre(box, pre, p, contain = !box.classList.contains('term')) {
+  const n = natural(pre, p), bw = box.clientWidth, bh = box.clientHeight;
+  if (!bw || !bh) return;
+  const k = contain ? Math.min(bw / n.w, bh / n.h) : bw / n.w;
+  const x = (bw - n.w * k) / 2, y = contain || n.h * k <= bh ? (bh - n.h * k) / 2 : bh - n.h * k;
+  pre.style.width = n.w + 'px'; pre.style.height = n.h + 'px';
+  pre.style.transform = `translate(${x.toFixed(1)}px,${y.toFixed(1)}px) scale(${k.toFixed(4)})`;
+  if (!sizeCards.raf) sizeCards.raf = requestAnimationFrame(() => { sizeCards.raf = 0; sizeCards(); });
+}
+
+// Cards share one height: the terminal area takes the widest pane aspect
+// among them, so the grids fill the card width instead of shrinking.
+let termH = 190, chromeH = 0;
+const TERM_MAX = Math.round((CW - 3) * 0.62); // a card stays landscape; taller panes show their bottom rows
+function sizeCards() {
+  const world = $('world'), card = world.querySelector('.card');
+  if (!card) return;
+  // Everything around the terminal, measured from the parts themselves.
+  if (!chromeH) chromeH = [...card.children].filter(e => !e.matches('.term,.lod,.livehint')).reduce((h, e) => h + e.offsetHeight, 0) + 2 + 18; // borders, live hint line
+  let a = 0;
+  world.querySelectorAll('.card').forEach(c => {
+    const p = panes[c.dataset.id];
+    if (!p || !p.cols) return;
+    const n = natural(c.querySelector('.term pre'), p);
+    a = Math.max(a, n.h / n.w);
+  });
+  if (!a) return;
+  const th = Math.round(Math.min(TERM_MAX, Math.max(150, (CW - 3) * a)));
+  if (Math.abs(th - termH) < 4) return;
+  termH = th; CH = chromeH + th;
+  world.style.setProperty('--th', th + 'px'); world.style.setProperty('--ch', CH + 'px');
+  world.querySelectorAll('.card').forEach(c => { const p = panes[c.dataset.id]; if (p) fitPre(c.querySelector('.term'), c.querySelector('.term pre'), p); });
+  layoutSig = ''; render();
+}
+
+function shortName(id) {
+  const s = state.sessions.find(x => x.id === id);
+  if (!s) return id.slice(0, 6);
+  const r = parseRole(s.label);
+  return r.tag ? `${r.tag} ${r.task}`.slice(0, 26) : (s.label || id).slice(0, 26);
+}
+
+// ---- terminals: one multiplexed stream for every card ----
+function syncPanes(ids) {
+  const key = ids.sort().join(',') + '|' + (focusId || liveId || '');
+  if (key === paneKey && paneES && paneES.readyState !== 2) return;
+  paneKey = key;
+  if (paneES) paneES.close();
+  if (!ids.length) return;
+  const q = new URLSearchParams({ids: ids.join(','), t: token});
+  if (focusId || liveId) q.set('focus', focusId || liveId);
+  paneES = new EventSource('/api/panes?' + q);
+  paneES.onmessage = ev => {
+    const p = JSON.parse(ev.data);
+    panes[p.id] = p;
+    const card = document.getElementById('card-' + p.id);
+    if (card) paintTerm(card, p);
+    if (p.id === focusId) paintFocus(p);
+  };
+  paneES.onerror = () => { paneES.close(); setTimeout(() => { paneKey = ''; render(); }, 2000); };
+}
+
+// ---- prompting ----
+async function sendText(id, text) {
+  if (!text.trim()) return false;
+  try { await api(`/api/sessions/${encodeURIComponent(id)}/send`, {method:'POST', body: JSON.stringify({text})}); toast('Wysłano do ' + shortName(id)); return true; }
+  catch (e) { toast('Błąd: ' + e.message); return false; }
+}
+async function sendKey(id, key) {
+  try { await api(`/api/sessions/${encodeURIComponent(id)}/send`, {method:'POST', body: JSON.stringify({key})}); }
+  catch (e) { toast('Błąd: ' + e.message); }
+}
+
+// ---- focus view ----
+function openFocus(id) {
+  focusId = id;
+  const s = state.sessions.find(x => x.id === id);
+  const r = parseRole(s?.label);
+  $('dChip').textContent = r.tag || 'sesja'; $('dTask').textContent = r.task || s?.label || id;
+  $('dMeta').textContent = `${base(s?.dir)} · ${id.slice(0, 8)}`;
+  $('dKeys').innerHTML = KEYS.map(k => `<button data-k="${k}">${k === 'Escape' ? 'Esc' : k}</button>`).join('');
+  $('dKeys').querySelectorAll('button').forEach(b => b.onclick = () => sendKey(id, b.dataset.k));
+  $('dlg').showModal();
+  if (panes[id]) paintFocus(panes[id]);
+  startLive(id);
+  paneKey = ''; render();
+}
+function paintFocus(p) {
+  const pre = $('dPre');
+  if (pre.dataset.html !== p.html) { pre.innerHTML = p.html; pre.dataset.html = p.html; }
+  // The window takes the pane's shape: a tall pane gets a narrow window.
+  const big = $('dBig'), n = natural(pre, p), want = Math.round(big.clientHeight * n.w / n.h) + 2;
+  const w = Math.max(520, Math.min(want, innerWidth * 0.96, 1600));
+  if (Math.abs(parseFloat($('dlg').style.width || 0) - w) > 4) $('dlg').style.width = w + 'px';
+  fitPre(big, pre, p);
+}
+$('dClose').onclick = () => $('dlg').close();
+// Esc belongs to the session while typing live; the dialog closes by its button.
+$('dlg').addEventListener('cancel', e => { if (liveId) e.preventDefault(); });
+$('dlg').addEventListener('close', () => { focusId = null; stopLive(); paneKey = ''; render(); });
+$('dBig').onclick = () => startLive(focusId);
+addEventListener('resize', () => { if (focusId && panes[focusId]) paintFocus(panes[focusId]); });
+
+// ---- live keyboard: every key goes straight to the pane ----
+let liveId = null, liveQ = [], liveBusy = false;
+const kbd = $('kbd');
+function startLive(id) {
+  if (!id) return;
+  if (liveId !== id) { liveId = id; liveQ = []; paneKey = ''; render(); }
+  document.querySelectorAll('.card.live').forEach(c => c.classList.toggle('live', c.dataset.id === id));
+  document.getElementById('card-' + id)?.classList.add('live');
+  kbd.value = ''; kbd.focus({preventScroll: true});
+  liveLabel();
+}
+function stopLive() {
+  liveId = null; liveQ = [];
+  document.querySelectorAll('.card.live').forEach(c => c.classList.remove('live'));
+  if (document.activeElement === kbd) kbd.blur();
+  liveLabel(); paneKey = ''; render();
+}
+function liveLabel() {
+  if (!$('dlg').open) return;
+  $('dLive').innerHTML = liveId === focusId
+    ? '<span class="on">● Klawiatura na żywo</span><span>Każdy klawisz trafia do sesji: Esc, strzałki, Tab, Ctrl+C. Shift+Enter albo Alt+Enter to nowa linia, ⌘V wkleja.</span>'
+    : '<span class="off">○ Klawiatura wyłączona</span><span>Kliknij konsolę, aby pisać.</span>';
+}
+kbd.addEventListener('blur', () => { setTimeout(() => { if (document.activeElement !== kbd && liveId && !$('dlg').open) stopLive(); else liveLabel(); }, 0); });
+document.addEventListener('pointerdown', e => {
+  if (!liveId || e.target.closest('.term,#dBig,.keys,dialog .hd')) return;
+  if ($('dlg').open && e.target.closest('dialog')) return;
+  stopLive();
+});
+
+const NAMED = {Enter:'Enter', Backspace:'BSpace', Tab:'Tab', Escape:'Escape', ArrowUp:'Up', ArrowDown:'Down', ArrowLeft:'Left', ArrowRight:'Right', Home:'Home', End:'End', PageUp:'PageUp', PageDown:'PageDown', Delete:'DC'};
+function keyName(e) {
+  if (e.key === 'Enter' && (e.shiftKey || e.altKey)) return 'M-Enter';
+  if (e.key === 'Tab' && e.shiftKey) return 'BTab';
+  if (e.altKey && e.key === 'Backspace') return 'M-BSpace';
+  if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) return e.key === 'ArrowLeft' ? 'M-Left' : 'M-Right';
+  if (NAMED[e.key]) return NAMED[e.key];
+  // Ctrl+letter by physical key, so a Polish layout still sends C-c.
+  if (e.ctrlKey && !e.metaKey && /^Key[A-Z]$/.test(e.code)) return 'C-' + e.code.slice(3).toLowerCase();
+  return null;
+}
+kbd.addEventListener('keydown', e => {
+  if (!liveId || e.isComposing || e.keyCode === 229) return;
+  if (e.metaKey) return; // ⌘V pastes through the input event, ⌘C copies nothing here
+  const k = keyName(e);
+  if (!k) return; // printable text, diacritics with Option: the input event sends it
+  e.preventDefault();
+  liveSend({k});
+});
+kbd.addEventListener('input', e => {
+  if (!liveId || e.isComposing) return;
+  const t = kbd.value; kbd.value = '';
+  if (t) liveSend({t});
+});
+kbd.addEventListener('compositionend', () => { const t = kbd.value; kbd.value = ''; if (t && liveId) liveSend({t}); });
+function liveSend(ev) {
+  const last = liveQ[liveQ.length - 1];
+  if (ev.t && last?.t) last.t += ev.t; else liveQ.push(ev);
+  flushLive();
+}
+// One request at a time keeps the order; what is typed meanwhile goes in the next batch.
+async function flushLive() {
+  if (liveBusy || !liveQ.length || !liveId) return;
+  liveBusy = true;
+  const id = liveId, events = liveQ.splice(0, 256);
+  try { await api(`/api/sessions/${encodeURIComponent(id)}/keys`, {method:'POST', body: JSON.stringify({events})}); }
+  catch (e) { toast('Klawiatura: ' + e.message); liveQ = []; }
+  liveBusy = false;
+  flushLive();
+}
+
+// ---- links ----
+function edgesOf(id) {
+  const m = {};
+  for (const e of edges) {
+    if (e.from !== id && e.to !== id) continue;
+    const other = e.from === id ? e.to : e.from;
+    m[other] ??= {other, out:0, in:0};
+    if (e.from === id) m[other].out += e.count; else m[other].in += e.count;
+  }
+  return Object.values(m).sort((a, b) => (b.out + b.in) - (a.out + a.in));
+}
+function pairs() {
+  const m = {};
+  for (const e of edges) {
+    const [a, b] = [e.from, e.to].sort(), k = a + '|' + b;
+    m[k] ??= {a, b, ab:0, ba:0, last:''};
+    if (e.from === a) m[k].ab += e.count; else m[k].ba += e.count;
+    if (e.last > m[k].last) m[k].last = e.last;
+  }
+  return Object.values(m).sort((x, y) => (y.ab + y.ba) - (x.ab + x.ba) || (x.a + x.b).localeCompare(y.a + y.b));
+}
+function visiblePairs() {
+  const ids = new Set(nodes.map(n => n.id));
+  return pairs().filter(p => ids.has(p.a) && ids.has(p.b));
+}
+async function loadLinks() {
+  try {
+    const res = await api('/api/links?hours=' + $('hours').value);
+    edges = res.edges || [];
+  } catch (e) { edges = []; $('edges').textContent = 'Błąd: ' + e.message; return; }
+  render();
+  const list = visiblePairs().slice(0, 12);
+  $('edges').className = list.length ? '' : 'muted';
+  $('edges').innerHTML = list.length ? list.map(p => `<div class="edge-row" data-a="${p.a}" data-b="${p.b}"><span>${esc(shortName(p.a))} ↔ ${esc(shortName(p.b))}</span><span class="n" title="${esc(shortName(p.a))} → ${esc(shortName(p.b))}: ${p.ab}, odwrotnie: ${p.ba}">${p.ab}/${p.ba}</span></div>`).join('') : 'Brak wiadomości między sesjami w tym oknie.';
+  $('edges').querySelectorAll('.edge-row').forEach(r => {
+    r.onmouseenter = () => { hoverId = r.dataset.a; hoverPartner = r.dataset.b; drawWires(); };
+    r.onmouseleave = () => { hoverId = null; hoverPartner = null; drawWires(); };
+    r.onclick = () => fitIds([r.dataset.a, r.dataset.b]);
+  });
+}
+
+// Free vertical corridors through a row: gaps between its cards and the
+// space beyond both ends.
+function corridors(ri) {
+  const xs = rows[ri].items.map(n => pos[n.id].x).sort((a, b) => a - b);
+  const out = [xs[0] - GX / 2 - 30, xs[xs.length - 1] + CW + GX / 2 + 30];
+  for (let i = 1; i < xs.length; i++) out.push((xs[i - 1] + CW + xs[i]) / 2);
+  return out;
+}
+
+// Routes every link between card borders. Links between neighbouring rows
+// are S-curves through the gap; links that skip rows drop through a free
+// corridor of every row in between; links inside a row arc above it.
+// Ends on one side of a card are spread along it in the order of the cards
+// they lead to, so lines leave a card without crossing each other.
+function routeAll(ps, z = 1) {
+  const ports = {};   // id|side → [{r, end, ox}]
+  const routes = [];
+  const lanes = {};   // corridor key → count used
+  for (const p of ps) {
+    const A = pos[p.a], B = pos[p.b];
+    if (!A || !B) continue;
+    const r = {p};
+    if (A.ri === B.ri) {
+      r.kind = 'same';
+      [r.s, r.t] = A.x < B.x ? [p.a, p.b] : [p.b, p.a];
+      r.sSide = r.tSide = 'top';
+    } else {
+      r.kind = Math.abs(A.ri - B.ri) === 1 ? 'adj' : 'skip';
+      [r.s, r.t] = A.ri < B.ri ? [p.a, p.b] : [p.b, p.a];
+      r.sSide = 'bottom'; r.tSide = 'top';
+    }
+    const S = pos[r.s], T = pos[r.t];
+    (ports[r.s + '|' + r.sSide] ??= []).push({r, end:'s', ox: T.x + (r.kind === 'same' ? 1e6 : 0)});
+    (ports[r.t + '|' + r.tSide] ??= []).push({r, end:'t', ox: S.x + (r.kind === 'same' ? -1e6 : 0)});
+    routes.push(r);
+  }
+  for (const [k, list] of Object.entries(ports)) {
+    const P = pos[k.split('|')[0]];
+    // Arcs inside a row use the ends of the top side facing each other.
+    list.sort((a, b) => a.ox - b.ox);
+    list.forEach((e, i) => { e.r[e.end + 'x'] = P.x + CW * .12 + CW * .76 * (i + 1) / (list.length + 1); });
+  }
+  for (const r of routes) {
+    const S = pos[r.s], T = pos[r.t];
+    const x0 = r.sx, x3 = r.tx;
+    if (r.kind === 'same') {
+      const y = S.y, h = 55 + Math.min(110, Math.abs(x3 - x0) / 7);
+      r.d = `M${x0},${y} C${x0},${y - h} ${x3},${y - h} ${x3},${y}`;
+      r.lx = (x0 + x3) / 2; r.ly = y - h * .75;
+    } else if (r.kind === 'adj') {
+      const y0 = S.y + CH, y3 = T.y, m = (y0 + y3) / 2;
+      r.d = `M${x0},${y0} C${x0},${m} ${x3},${m} ${x3},${y3}`;
+      r.lx = (x0 + x3) / 2; r.ly = m;
+    } else {
+      const y0 = S.y + CH, y3 = T.y, yA = y0 + GY * .8, yB = y3 - GY * .8;
+      // A corridor free in every row in between: the shared candidates of
+      // the first row in between, shifted out of any card of the others.
+      const mids = [];
+      for (let ri = S.ri + 1; ri < T.ri; ri++) mids.push(ri);
+      const blocked = x => mids.some(ri => rows[ri].items.some(n => x > pos[n.id].x - 14 && x < pos[n.id].x + CW + 14));
+      const cand = mids.flatMap(corridors).filter(x => !blocked(x));
+      if (!cand.length) cand.push(Math.min(...Object.values(pos).map(p => p.x)) - GX);
+      const want = (x0 + x3) / 2;
+      let gx = cand.reduce((b, x) => Math.abs(x - x0) + Math.abs(x - x3) + Math.abs(x - want) * .2 < Math.abs(b - x0) + Math.abs(b - x3) + Math.abs(b - want) * .2 ? x : b);
+      const lk = Math.round(gx), lane = lanes[lk] = (lanes[lk] ?? -1) + 1;
+      // Lanes and labels sit apart by a constant on-screen distance.
+      gx += (lane % 2 ? 1 : -1) * Math.ceil(lane / 2) * 10 * z;
+      const h1 = (yA - y0) / 2, h2 = (y3 - yB) / 2;
+      r.d = `M${x0},${y0} C${x0},${y0 + h1} ${gx},${yA - h1} ${gx},${yA} L${gx},${yB} C${gx},${yB + h2} ${x3},${y3 - h2} ${x3},${y3}`;
+      r.lx = gx; r.ly = (yA + yB) / 2 + (lane % 2 ? 1 : -1) * Math.ceil(lane / 2) * 26 * z;
+    }
+  }
+  return routes;
+}
+
+function drawWires() {
+  const svg = $('wires');
+  const box = worldBox();
+  document.querySelectorAll('.card').forEach(c => c.classList.remove('dim', 'hl'));
+  if (!box) { svg.innerHTML = ''; return; }
+  const m = 400;
+  Object.assign(svg.style, {left: box.x0 - m + 'px', top: box.y0 - m + 'px', width: box.x1 - box.x0 + 2 * m + 'px', height: box.y1 - box.y0 + 2 * m + 'px'});
+  svg.setAttribute('viewBox', `${box.x0 - m} ${box.y0 - m} ${box.x1 - box.x0 + 2 * m} ${box.y1 - box.y0 + 2 * m}`);
+  const on = $('wireToggle').checked;
+  const ps = visiblePairs();
+  const max = Math.max(1, ...ps.map(p => p.ab + p.ba));
+  const related = new Set();
+  const isActive = p => hoverId && (p.a === hoverId || p.b === hoverId) && (!hoverPartner || p.a === hoverPartner || p.b === hoverPartner);
+  for (const p of ps) if (isActive(p)) { related.add(p.a); related.add(p.b); }
+  const marker = c => `<marker id="m-${c}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="${({on:'#7aa2ff', fresh:'rgba(122,162,255,.8)', idle:'rgba(139,149,171,.6)'})[c]}"/></marker>`;
+  let lines = '', labels = '';
+  const z = Math.min(3, Math.max(1, 1 / view.k));
+  for (const r of routeAll(ps, z)) {
+    const p = r.p, n = p.ab + p.ba, active = isActive(p);
+    if (!on && !active) continue;
+    const fresh = Date.now() - Date.parse(p.last) < 15 * 60e3;
+    const c = active ? 'on' : fresh ? 'fresh' : 'idle';
+    const color = {on:'var(--accent)', fresh:'rgba(122,162,255,.6)', idle:'rgba(139,149,171,.35)'}[c];
+    const faded = hoverId && !active ? ' faded' : '';
+    const w = 1.5 + 4.5 * Math.sqrt(n / max) + (active ? 1.5 : 0);
+    // The path runs s → t; arrows point at whoever received messages.
+    const st = r.s === p.a ? p.ab : p.ba, ts = r.s === p.a ? p.ba : p.ab;
+    const title = `${esc(shortName(r.s))} → ${esc(shortName(r.t))}: ${st}\n${esc(shortName(r.t))} → ${esc(shortName(r.s))}: ${ts}`;
+    lines += `<g class="${faded}" data-a="${p.a}" data-b="${p.b}"><path class="e" d="${r.d}" stroke="${color}" stroke-width="${w}"${st ? ` marker-end="url(#m-${c})"` : ''}${ts ? ` marker-start="url(#m-${c})"` : ''}/><path class="hit" d="${r.d}"><title>${title}</title></path></g>`;
+    let txt = String(n);
+    if (active && hoverId) { const out = hoverId === r.s ? st : ts, inn = hoverId === r.s ? ts : st; txt = `→${out} ←${inn}`; }
+    // Labels keep a readable size on screen whatever the zoom.
+    const tw = (10 + txt.length * 7.2) * z;
+    labels += `<g class="lbl${active ? ' on' : ''}${faded}"><rect x="${r.lx - tw / 2}" y="${r.ly - 10 * z}" width="${tw}" height="${20 * z}" rx="${10 * z}"/><text x="${r.lx}" y="${r.ly + 4 * z}" text-anchor="middle" style="font-size:${12 * z}px">${txt}</text><title>${title}</title></g>`;
+  }
+  svg.innerHTML = `<defs>${marker('on')}${marker('fresh')}${marker('idle')}</defs>${lines}${labels}`;
+  svg.querySelectorAll('g[data-a] .hit').forEach(h => {
+    const g = h.parentNode;
+    h.onmouseenter = () => { hoverId = g.dataset.a; hoverPartner = g.dataset.b; drawWires(); };
+    h.onmouseleave = () => { hoverId = null; hoverPartner = null; drawWires(); };
+    h.onclick = () => fitIds([g.dataset.a, g.dataset.b]);
+  });
+  if (hoverId) document.querySelectorAll('.card').forEach(c => {
+    if (c.dataset.id === hoverId || c.dataset.id === hoverPartner) c.classList.add('hl');
+    else if (related.size && !related.has(c.dataset.id)) c.classList.add('dim');
+  });
+}
+
+// ---- canvas: pan and zoom ----
+const vp = $('viewport');
+function applyView(animate) {
+  const w = $('world');
+  w.style.transition = animate ? 'transform .35s ease' : '';
+  w.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.k})`;
+  w.classList.toggle('far', view.k < FAR);
+  w.style.setProperty('--z', Math.min(3, Math.max(1, 1 / view.k)));
+  $('zPct').textContent = Math.round(view.k * 100) + '%';
+  if (Math.abs(view.k - (applyView.k || 0)) > .02) { applyView.k = view.k; clearTimeout(applyView.h); applyView.h = setTimeout(drawWires, 120); }
+}
+function zoomAt(px, py, k2, animate) {
+  k2 = Math.min(2, Math.max(0.08, k2));
+  view.x = px - (px - view.x) * (k2 / view.k);
+  view.y = py - (py - view.y) * (k2 / view.k);
+  view.k = k2;
+  applyView(animate);
+}
+function fitBox(b, animate, maxK = 1) {
+  if (!b) return;
+  const r = vp.getBoundingClientRect();
+  const side = !$('aside').classList.contains('hidden') && r.width > 900 ? 344 : 0;
+  const pad = 48, left = 170; // room for the row titles
+  const W = r.width - side - 2 * pad, H = r.height - 2 * pad;
+  const bw = b.x1 - b.x0 + left, bh = b.y1 - b.y0;
+  view.k = Math.max(0.08, Math.min(maxK, W / bw, H / bh));
+  view.x = pad + (W - bw * view.k) / 2 + (left - b.x0) * view.k;
+  view.y = pad + (H - bh * view.k) / 2 - b.y0 * view.k;
+  applyView(animate);
+}
+// Arcs between cards of one row rise above it: keep them in the frame.
+function fitAll(animate) { const b = worldBox(); if (b) b.y0 -= 180; fitBox(b, animate); }
+function fitIds(ids) { userMoved = true; fitBox(worldBox(ids.filter(id => pos[id])), true, 1); }
+
+const pts = new Map();
+let down = null;
+vp.addEventListener('pointerdown', e => {
+  if (e.button !== 0 && e.pointerType === 'mouse') return;
+  const t = e.target;
+  if (t.closest('aside') || t.closest('.hit') || (t.closest('.card') && !t.closest('.lod'))) return;
+  vp.setPointerCapture(e.pointerId);
+  pts.set(e.pointerId, {x: e.clientX, y: e.clientY});
+  if (pts.size === 1) down = {x: e.clientX, y: e.clientY, lod: t.closest('.card')?.dataset.id, moved: false};
+  vp.classList.add('panning');
+});
+vp.addEventListener('pointermove', e => {
+  const prev = pts.get(e.pointerId);
+  if (!prev) return;
+  const cur = {x: e.clientX, y: e.clientY};
+  if (pts.size === 1) {
+    view.x += cur.x - prev.x; view.y += cur.y - prev.y;
+    if (down && Math.hypot(cur.x - down.x, cur.y - down.y) > 4) down.moved = true;
+    applyView();
+  } else if (pts.size === 2) {
+    const [o] = [...pts].filter(([id]) => id !== e.pointerId).map(([, p]) => p);
+    const r = vp.getBoundingClientRect();
+    const d0 = Math.hypot(prev.x - o.x, prev.y - o.y), d1 = Math.hypot(cur.x - o.x, cur.y - o.y);
+    const c0 = {x: (prev.x + o.x) / 2 - r.left, y: (prev.y + o.y) / 2 - r.top}, c1 = {x: (cur.x + o.x) / 2 - r.left, y: (cur.y + o.y) / 2 - r.top};
+    view.x += c1.x - c0.x; view.y += c1.y - c0.y;
+    if (d0 > 0) zoomAt(c1.x, c1.y, view.k * d1 / d0);
+    if (down) down.moved = true;
+  }
+  pts.set(e.pointerId, cur);
+  userMoved = true;
+});
+const up = e => {
+  if (!pts.delete(e.pointerId)) return;
+  if (!pts.size) {
+    vp.classList.remove('panning');
+    // A click (not a drag) on a zoomed-out card zooms into it.
+    if (down && !down.moved && down.lod && $('world').classList.contains('far')) fitIds([down.lod]);
+    down = null;
+  }
+};
+vp.addEventListener('pointerup', up);
+vp.addEventListener('pointercancel', up);
+vp.addEventListener('wheel', e => {
+  if (e.target.closest('aside')) return;
+  e.preventDefault();
+  const r = vp.getBoundingClientRect();
+  if (e.ctrlKey || e.metaKey) zoomAt(e.clientX - r.left, e.clientY - r.top, view.k * Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0025)));
+  else { view.x -= e.deltaX; view.y -= e.deltaY; applyView(); }
+  userMoved = true;
+}, {passive: false});
+// Safari trackpad pinch.
+let gk = 1;
+vp.addEventListener('gesturestart', e => { e.preventDefault(); gk = view.k; });
+vp.addEventListener('gesturechange', e => { e.preventDefault(); const r = vp.getBoundingClientRect(); zoomAt(e.clientX - r.left, e.clientY - r.top, gk * e.scale); userMoved = true; });
+const zoomCenter = f => { const r = vp.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, view.k * f, true); userMoved = true; };
+$('zIn').onclick = () => zoomCenter(1.25);
+$('zOut').onclick = () => zoomCenter(0.8);
+$('zFit').onclick = () => { userMoved = false; fitAll(true); };
+$('zRelayout').onclick = () => { layoutSig = ''; userMoved = false; render(); };
+$('panelToggle').onclick = () => { $('aside').classList.toggle('hidden'); store.set('board-panel', $('aside').classList.contains('hidden') ? '0' : '1'); loadSys(); };
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey || $('dlg').open || liveId || e.target.closest('textarea,input,select')) return;
+  if (e.key === 'f' || e.key === 'F' || e.key === '0') $('zFit').click();
+  else if (e.key === '+' || e.key === '=') zoomCenter(1.25);
+  else if (e.key === '-') zoomCenter(0.8);
+  else if (e.key === 'p' || e.key === 'P') $('panelToggle').click();
+});
+addEventListener('resize', () => { if (!userMoved) fitAll(); });
+
+// ---- Vercel ----
+function ago(ms) {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return Math.round(s) + ' s';
+  if (s < 3600) return Math.round(s / 60) + ' min';
+  if (s < 86400) return Math.round(s / 3600) + ' h';
+  return Math.round(s / 86400) + ' d';
+}
+function dur(a, b) { if (!a || !b) return ''; const s = Math.round((b - a) / 1000); return s < 60 ? s + ' s' : Math.floor(s / 60) + ' min ' + (s % 60) + ' s'; }
+const STATE_PL = {QUEUED:'w kolejce', INITIALIZING:'start', BUILDING:'build', READY:'gotowy', ERROR:'błąd', CANCELED:'anulowany'};
+async function loadVercel() {
+  let res;
+  try { res = await api('/api/vercel'); }
+  catch (e) { $('vercel').className = 'muted'; $('vercel').textContent = 'Vercel niedostępny: ' + e.message; return; }
+  const all = res.deployments || [];
+  const active = all.filter(d => ['QUEUED','INITIALIZING','BUILDING'].includes(d.state));
+  const done = all.filter(d => !active.includes(d) && d.state !== 'CANCELED').slice(0, 10);
+  const row = d => `<div class="dep"><span class="s ${d.state}"></span>
+      <span class="p"><a href="${esc(d.inspector || '#')}" target="_blank" rel="noopener">${esc(d.project)}</a>${d.target === 'production' ? '<span class="prod">PROD</span>' : ''}</span>
+      <span class="t">${esc(STATE_PL[d.state] || d.state)} · ${active.includes(d) ? ago(d.buildingAt || d.created) : (dur(d.buildingAt || d.created, d.ready) || ago(d.created))}</span>
+      <span class="c" title="${esc(d.commit)}">${esc(d.commit || d.branch || d.id)}</span></div>`;
+  $('vercel').className = '';
+  $('vercel').innerHTML = (active.length ? `<div class="muted" style="margin-bottom:4px">W toku: ${active.length}</div>` + active.map(row).join('') : '<div class="muted">Kolejka pusta.</div>')
+    + (done.length ? `<div class="muted" style="margin:8px 0 4px">Ostatnie</div>` + done.map(row).join('') : '');
+  $('vAt').textContent = new Date(res.at).toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  clearTimeout(loadVercel.h);
+  loadVercel.h = setTimeout(loadVercel, active.length ? 8000 : 30000);
+}
+
+// ---- system: rolling 30 min of the machine the agents run on ----
+let sysData = [], sysHover = -1;
+const GB = 1024 ** 3;
+const fmtB = b => b >= GB ? (b / GB).toFixed(1).replace('.', ',') + ' GB' : b >= 1024 ** 2 ? (b / 1024 ** 2).toFixed(b >= 1e8 ? 0 : 1).replace('.', ',') + ' MB' : Math.round(b / 1024) + ' kB';
+const fmtRate = b => fmtB(b) + '/s';
+const pct = (a, b) => b ? 100 * a / b : 0;
+// Each tile: series (one colour each), its own y-range, and the text for a sample.
+const SYS = [
+  {key:'cpu', label:'CPU', ser:[{f:s => s.cpu, c:'var(--accent)'}], y:() => [0, 100],
+   txt:s => [Math.round(s.cpu) + '%', 'load ' + s.load.toFixed(1).replace('.', ',')]},
+  {key:'mem', label:'RAM', ser:[{f:s => pct(s.memUsed, s.memTotal), c:'var(--accent)'}], y:() => [0, 100],
+   txt:s => [Math.round(pct(s.memUsed, s.memTotal)) + '%', fmtB(s.memUsed) + ' z ' + fmtB(s.memTotal)],
+   level:s => s.swap > 8 * GB ? ['warn', 'swap ' + fmtB(s.swap)] : null},
+  {key:'temp', label:'Temp. CPU', ser:[{f:s => s.tempCpu, c:'var(--accent)'}], y:d => [30, Math.max(100, ...d)],
+   txt:s => s.tempCpu ? [Math.round(s.tempCpu) + ' °C', 'maks. ' + Math.round(s.tempMax) + ' °C'] : ['brak', 'czujnik niedostępny'],
+   level:s => s.tempMax >= 95 ? ['crit', '! gorąco'] : s.tempMax >= 85 ? ['warn', '! ciepło'] : null},
+  {key:'disk', label:'Dysk', ser:[{f:s => s.diskIO, c:'var(--accent)'}], y:d => [0, Math.max(1024 ** 2, ...d)],
+   txt:s => [Math.round(pct(s.diskUsed, s.diskSize)) + '%', 'wolne ' + fmtB(s.diskSize - s.diskUsed) + ' · I/O ' + fmtRate(s.diskIO)],
+   level:s => pct(s.diskUsed, s.diskSize) >= 95 ? ['crit', '! pełny'] : pct(s.diskUsed, s.diskSize) >= 90 ? ['warn', '! prawie pełny'] : null},
+  {key:'net', label:'Sieć', wide:true, ser:[{f:s => s.netIn, c:'var(--accent)', n:'↓ pobieranie'}, {f:s => s.netOut, c:'var(--qa)', n:'↑ wysyłanie'}], y:d => [0, Math.max(64 * 1024, ...d)],
+   txt:s => ['↓ ' + fmtRate(s.netIn) + '  ↑ ' + fmtRate(s.netOut), '']},
+];
+function spark(t, d) {
+  const W = 300, H = 34, n = d.length;
+  if (n < 2) return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-k="${t.key}"><line class="gr" x1="0" x2="${W}" y1="${H - .5}" y2="${H - .5}"/></svg>`;
+  const vals = t.ser.map(s => d.map(s.f)), [y0, y1] = t.y(vals.flat());
+  const X = i => (i / (n - 1)) * W, Y = v => H - 1 - Math.max(0, Math.min(1, (v - y0) / (y1 - y0 || 1))) * (H - 2);
+  let out = `<line class="gr" x1="0" x2="${W}" y1="${H - .5}" y2="${H - .5}"/>`;
+  vals.forEach((v, k) => {
+    const pts = v.map((x, i) => X(i).toFixed(1) + ',' + Y(x).toFixed(1)).join(' ');
+    if (t.ser.length === 1) out += `<polygon class="ar" fill="${t.ser[k].c}" points="0,${H} ${pts} ${W},${H}"/>`;
+    out += `<polyline class="ln" stroke="${t.ser[k].c}" points="${pts}" vector-effect="non-scaling-stroke"/>`;
+  });
+  if (sysHover >= 0 && sysHover < n) out += `<line class="xh" x1="${X(sysHover)}" x2="${X(sysHover)}" y1="0" y2="${H}" vector-effect="non-scaling-stroke"/>`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" data-k="${t.key}" role="img" aria-label="${esc(t.label)}, ostatnie 30 minut">${out}</svg>`;
+}
+function paintSys() {
+  const d = sysData, el = $('sys');
+  if (!d.length) { el.className = 'sys muted'; el.textContent = 'Zbieram pierwsze odczyty…'; return; }
+  const s = d[sysHover >= 0 && sysHover < d.length ? sysHover : d.length - 1];
+  el.className = 'sys';
+  el.innerHTML = SYS.map(t => {
+    const [v, sub] = t.txt(s), lv = t.level && t.level(s);
+    const lg = t.ser.length > 1 ? `<span class="lg">${t.ser.map(x => `<span><i style="background:${x.c}"></i>${x.n}</span>`).join('')}</span>` : '';
+    return `<div class="tile"${t.wide ? ' style="grid-column:1/-1"' : ''}><div class="k"><span>${esc(t.label)}</span>${lg}</div>
+      <div class="v">${esc(v)}${lv ? `<span class="${lv[0]}">${esc(lv[1])}</span>` : ''}</div>${sub ? `<div class="sub" title="${esc(sub)}">${esc(sub)}</div>` : ''}${spark(t, d)}</div>`;
+  }).join('');
+  const at = new Date(s.at).toLocaleTimeString('pl-PL', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  $('sysAt').textContent = sysHover >= 0 ? at + ' (podgląd)' : at;
+}
+// One crosshair for all tiles: hovering any chart shows that moment everywhere.
+$('sys').addEventListener('pointermove', e => {
+  const svg = e.target.closest('svg');
+  if (!svg || sysData.length < 2) return;
+  const r = svg.getBoundingClientRect(), i = Math.round(((e.clientX - r.left) / r.width) * (sysData.length - 1));
+  const h = Math.max(0, Math.min(sysData.length - 1, i));
+  if (h !== sysHover) { sysHover = h; paintSys(); }
+});
+$('sys').addEventListener('pointerleave', () => { sysHover = -1; paintSys(); });
+async function loadSys() {
+  try { const r = await api('/api/system'); sysData = r.samples || []; paintSys(); }
+  catch (e) { $('sys').className = 'sys muted'; $('sys').textContent = 'Odczyt niedostępny: ' + e.message; }
+  clearTimeout(loadSys.h);
+  if (!document.hidden && !$('aside').classList.contains('hidden')) loadSys.h = setTimeout(loadSys, 5000);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) loadSys(); });
+
+// ---- state ----
+function fillProfiles() {
+  const sel = $('profile'), cur = sel.value || store.get('board-profile', 'teceer');
+  const names = [...new Set(state.sessions.filter(s => s.running).map(s => s.profile))];
+  sel.innerHTML = `<option value="">wszystkie</option>` + names.map(n => `<option ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('');
+  if (!names.includes(cur)) sel.value = '';
+}
+function connect() {
+  const es = new EventSource('/api/events?t=' + encodeURIComponent(token));
+  es.onmessage = ev => { state = JSON.parse(ev.data); fillProfiles(); render(); };
+  es.onerror = () => { es.close(); setTimeout(connect, 3000); };
+}
+$('profile').onchange = () => { store.set('board-profile', $('profile').value); userMoved = false; render(); loadLinks(); };
+$('hours').onchange = loadLinks;
+$('wireToggle').onchange = () => drawWires();
+$('showIdle').checked = store.get('board-show-idle', '0') === '1';
+$('showIdle').onchange = () => { store.set('board-show-idle', $('showIdle').checked ? '1' : '0'); userMoved = false; render(); };
+if (innerWidth <= 900 || store.get('board-panel', '1') === '0') $('aside').classList.add('hidden');
+applyView();
+api('/api/state').then(s => { state = s; fillProfiles(); render(); loadLinks(); });
+connect();
+loadVercel();
+loadSys();
+setInterval(loadLinks, 30000);
+</script>
+</body>
+</html>

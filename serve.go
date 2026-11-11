@@ -31,7 +31,7 @@ import (
 	"github.com/teceer/harness/internal/transcript"
 )
 
-//go:embed web/index.html
+//go:embed web/index.html web/board.html
 var webFS embed.FS
 
 // cmdServe runs the remote control: the same session list as the sidebar,
@@ -47,6 +47,7 @@ func cmdServe(args []string) error {
 	port := fs.Int("port", 7777, "port")
 	addr := fs.String("addr", "127.0.0.1", "address to listen on")
 	noTailscale := fs.Bool("no-tailscale", false, "do not publish through `tailscale serve`")
+	noNotify := fs.Bool("no-notify", false, "do not push notifications (a second instance beside the main one)")
 	fs.Parse(args)
 
 	return withStore(func(cfg *config.Config, st *store.Store) error {
@@ -76,7 +77,9 @@ func cmdServe(args []string) error {
 			}
 		}
 
-		go srv.watch()
+		if !*noNotify {
+			go srv.watch()
+		}
 		stop := make(chan os.Signal, 1)
 		signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 		errs := make(chan error, 1)
@@ -164,6 +167,11 @@ func (s *webServer) paneEvery(pane string) func() time.Duration {
 func (s *webServer) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", s.page)
 	mux.HandleFunc("GET /s/{id}", s.page) // one session, its own page
+	mux.HandleFunc("GET /board", s.boardPage)
+	mux.Handle("GET /api/panes", s.auth(s.panesStream))
+	mux.Handle("GET /api/links", s.auth(s.links))
+	mux.Handle("GET /api/vercel", s.auth(s.vercel))
+	mux.Handle("GET /api/system", s.auth(s.system))
 	mux.Handle("GET /api/state", s.auth(s.state))
 	mux.Handle("GET /api/events", s.auth(s.events))
 	mux.Handle("GET /api/sessions/{id}/messages", s.auth(s.messages))
@@ -173,6 +181,7 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/sessions/{id}/scroll", s.auth(s.scroll))
 	mux.Handle("POST /api/sessions/{id}/upload", s.auth(s.upload))
 	mux.Handle("POST /api/sessions/{id}/send", s.auth(s.send))
+	mux.Handle("POST /api/sessions/{id}/keys", s.auth(s.liveKeys))
 	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
 	mux.Handle("POST /api/sessions/{id}/resume", s.auth(s.resume))
 	mux.Handle("POST /api/new", s.auth(s.newSession))

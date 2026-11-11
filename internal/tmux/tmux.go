@@ -404,6 +404,42 @@ func Capture(pane string) (string, error) {
 	return run("capture-pane", "-e", "-p", "-J", "-t", pane)
 }
 
+// CaptureGrid returns the visible screen as the terminal draws it, without
+// rejoining wrapped lines, and the pane's size in cells: a board preview
+// scales exactly that grid, so nothing is cut off.
+func CaptureGrid(pane string) (out string, cols, rows int, err error) {
+	info, err := run("display-message", "-p", "-t", pane, "#{pane_width} #{pane_height}")
+	if err != nil {
+		return "", 0, 0, err
+	}
+	fmt.Sscan(info, &cols, &rows)
+	out, err = run("capture-pane", "-e", "-p", "-t", pane)
+	return out, cols, rows, err
+}
+
+// KeyEvent is one step of live typing: literal text or one named key.
+type KeyEvent struct {
+	Text string `json:"t,omitempty"`
+	Key  string `json:"k,omitempty"`
+}
+
+// SendKeys replays live typing in order, literal text with -l so nothing in
+// it is read as a key name.
+func SendKeys(pane string, events []KeyEvent) error {
+	for _, ev := range events {
+		var err error
+		if ev.Text != "" {
+			_, err = run("send-keys", "-t", pane, "-l", ev.Text)
+		} else if ev.Key != "" {
+			_, err = run("send-keys", "-t", pane, ev.Key)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Scrollback returns up to lines of history above the visible screen (not
 // the screen itself), for scrolling back on a phone without touching the
 // pane's own copy mode. alt reports a full-screen program (alternate
