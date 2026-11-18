@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -253,5 +254,32 @@ func TestUnread(t *testing.T) {
 	}
 	if st := state(); st.Sessions[0].Unread {
 		t.Fatal("read must clear the mark")
+	}
+}
+
+func TestFocus(t *testing.T) {
+	srv, mux := testServer(t)
+	var got []string
+	srv.focusFn = func(_ *config.Config, _ *store.Store, se store.Session) error { got = append(got, se.ID); return nil }
+	if w := do(mux, "POST", "/api/sessions/nope/focus", "secret-token", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown id: %d", w.Code)
+	}
+	if w := do(mux, "POST", "/api/sessions/sess-1/focus", "", ""); w.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", w.Code)
+	}
+	if w := do(mux, "POST", "/api/sessions/sess-1/focus", "secret-token", ""); w.Code != http.StatusOK {
+		t.Fatalf("focus: %d %s", w.Code, w.Body)
+	}
+	if len(got) != 1 || got[0] != "sess-1" {
+		t.Fatalf("focused = %v", got)
+	}
+	srv.focusFn = func(*config.Config, *store.Store, store.Session) error { return errors.New("sidebar is not running") }
+	if w := do(mux, "POST", "/api/sessions/sess-1/focus", "secret-token", ""); w.Code != http.StatusConflict {
+		t.Fatalf("no sidebar: %d", w.Code)
+	}
+	// Without a harness pane the real focus refuses before touching tmux.
+	se, _ := srv.st.Find("sess-1")
+	if err := focusSession(srv.cfg, srv.st, se); err == nil {
+		t.Fatal("a session without a pane must not be focusable")
 	}
 }

@@ -226,6 +226,49 @@ are dropped. With the app set up, `notify_command` can go.
 Both are top-level keys: in TOML they must come **before** the first
 `[profiles.…]` table, or they end up inside it.
 
+## Remote hosts
+
+Sessions running on another machine show up here too, as long as that
+machine runs `harness serve` and this one can reach it (a tailnet):
+
+```toml
+[remotes.box]
+url = "https://box.your-tailnet.ts.net"
+# token = "…"    # that machine's ~/.harness/web-token; default: the local one
+```
+
+With no `token`, the local `~/.harness/web-token` is used, so copying one
+token file to both machines is enough. Everything goes through the remote's
+API (the same one the phone uses): no SSH, and only what that API allows.
+
+A remote session's id is `<remote>:<id>` (`box:8735e6c9`); it forms a group
+named like the remote.
+
+- `harness ls` (and `--json`, with a `host` field) lists them after the
+  local profiles. A host that does not answer within 3 s is one line saying
+  `unreachable`; the local list is never held up by it.
+- `harness preview box:8735` prints the conversation.
+- The sidebar lists them in a **remote** section, kept current in the
+  background from the remote's event stream. `⏎` shows the session next to
+  the sidebar: a pane running `harness remote-attach box:<id>`, which
+  mirrors the session's tmux pane as its host streams it and passes on what
+  you type — text, pastes, the ordinary keys, Ctrl/Alt + letter and the
+  wheel in a full-screen session. `␣` peeks, `a` archives it there, `⏎` on
+  an archived one resumes it there. `harness remote-attach` works in any
+  terminal as well; `ctrl+]` leaves and the session keeps running.
+- `harness serve` includes them in `/api/state` and `/api/events` (`host`
+  set, the profile named like the remote, plus a `remotes` list saying which
+  hosts answer) and passes per-session calls for a `<remote>:<id>` on to
+  that host, so the page and the native app connected to this machine see
+  and answer them unchanged. `POST /api/new` takes `"host": "box"` to start
+  a session there. Notifications for remote sessions stay with the remote's
+  own `harness serve`.
+
+The mirror shows the remote pane at the size it has there: a wider or
+taller one is cut on the right and shows its bottom rows. `⌘[` `⌘]` and
+`⌥1…9` cycle local sessions only; renaming and forgetting a remote session
+is done on its host.
+
 ## Profiles
 
 `~/.harness/config.toml` (written on first run) maps directory roots to an

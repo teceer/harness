@@ -268,6 +268,9 @@ function renderList() {
       html += row(s);
     }
   }
+  // remote hosts ([remotes.…] in config.toml) that do not answer right now
+  for (const r of state.remotes || []) if (!r.ok && (!filter || filter === r.name))
+    html += `<p class="note"><b style="color:${profileColor(r.name)}">${esc(r.name)}</b> · remote · unreachable: ${esc(r.error || '')}</p>`;
   $('rows').innerHTML = html || '<p class="note">nothing here</p>';
   $('dirs').innerHTML = state.dirs.map(d => `<option value="${esc(d)}">`).join('');
   for (const el of $('rows').querySelectorAll('[data-id]')) el.onclick = () => open(el.dataset.id);

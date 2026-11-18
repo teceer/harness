@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -169,16 +172,40 @@ func switchTo(cfg *config.Config, st *store.Store, which string) error {
 		}
 		target = order[n-1]
 	}
+	return showSession(cfg, sb, all, target)
+}
+
+// showSession puts target's pane next to the sidebar in the main tmux
+// window and focuses it — what ⌘[ ⌘] and the board's click on a character
+// do, without opening another terminal.
+func showSession(cfg *config.Config, sb string, all []store.Session, target store.Session) error {
 	names := map[string]string{}
 	for _, s := range all {
 		if s.TmuxPane != "" {
 			names[s.TmuxPane] = windowName(s)
 		}
 	}
-	err = tmux.Show(sb, target.TmuxPane, cfg.SidebarWidth, func(p string) string { return names[p] }, true)
+	err := tmux.Show(sb, target.TmuxPane, cfg.SidebarWidth, func(p string) string { return names[p] }, true)
 	nudgeSidebar(syscall.SIGUSR1)
 	bump(cfg) // fallback for a sidebar that cannot be signalled
 	return err
+}
+
+// focusSession is showSession for a session looked up by the web server:
+// it needs a live pane and a running sidebar.
+func focusSession(cfg *config.Config, st *store.Store, se store.Session) error {
+	if se.TmuxPane == "" || !paneExists(se.TmuxPane) {
+		return errors.New("session is not running in harness")
+	}
+	sb := tmux.Sidebar()
+	if sb == "" {
+		return errors.New("sidebar is not running")
+	}
+	all, err := st.List()
+	if err != nil {
+		return err
+	}
+	return showSession(cfg, sb, all, se)
 }
 
 // uiDebug logs every non-periodic UI message when HARNESS_UI_DEBUG names a file.
@@ -202,6 +229,10 @@ func cmdSidebar(args []string) error {
 			lipgloss.SetColorProfile(termenv.TrueColor)
 		}
 		m := newSidebar(cfg, st, self)
+		// Remote hosts are followed in the background: the list reads them
+		// from memory, so a slow or absent host never stalls the sidebar.
+		m.hub = newRemoteHub(cfg)
+		m.hub.start(context.Background())
 		// Focus reports tell the sidebar when the keyboard moves into the
 		// session next to it (tmux runs with focus-events on).
 		p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithReportFocus())
@@ -237,10 +268,12 @@ const (
 type sidebar struct {
 	cfg  *config.Config
 	st   *store.Store
-	self string // our own tmux pane; "" when not run by `harness ui`
+	self string     // our own tmux pane; "" when not run by `harness ui`
+	hub  *remoteHub // sessions of the remote hosts; nil without any
 
-	sessions    []store.Session
-	shown       string // pane currently displayed next to the sidebar
+	sessions    []store.Session // local ones, then the remote hosts'
+	remotesDown []remoteView    // remote hosts that do not answer
+	shown       string          // pane currently displayed next to the sidebar
 	selID       string
 	selPane     string // pane to select once it shows up in the data
 	lastPane    string // pane of the selected session, to follow id changes
@@ -281,6 +314,7 @@ type nudgeMsg struct{}
 
 type dataMsg struct {
 	sessions []store.Session
+	down     []remoteView
 	shown    string
 	synced   bool
 	err      error
@@ -310,7 +344,7 @@ func (m *sidebar) Init() tea.Cmd {
 	return tea.Batch(m.load(true), tick())
 }
 
-func (m *sidebar) stamp() string { return stateStamp(m.cfg.Home) }
+func (m *sidebar) stamp() string { return stateStamp(m.cfg.Home) + m.hub.stamp() }
 
 // stateStamp fingerprints everything that signals new state: the database
 // (hooks write it) and ui.bump (touched by `harness switch`). Watchers
@@ -327,7 +361,7 @@ func stateStamp(home string) string {
 
 // load reads state off the UI goroutine; sync (ps + tmux) only every few seconds.
 func (m *sidebar) load(doSync bool) tea.Cmd {
-	st, self := m.st, m.self
+	st, self, hub := m.st, m.self, m.hub
 	return func() tea.Msg {
 		if doSync {
 			if err := sync(st); err != nil {
@@ -339,7 +373,16 @@ func (m *sidebar) load(doSync bool) tea.Cmd {
 		if self != "" {
 			shown = tmux.Shown(self)
 		}
-		return dataMsg{sessions: ss, shown: shown, synced: doSync, err: err}
+		var down []remoteView
+		if views := hub.snapshot(); len(views) > 0 {
+			ss = append(ss, withRemotePanes(remoteSessions(views))...)
+			for _, v := range views {
+				if v.Err != "" {
+					down = append(down, v)
+				}
+			}
+		}
+		return dataMsg{sessions: ss, down: down, shown: shown, synced: doSync, err: err}
 	}
 }
 
@@ -385,7 +428,7 @@ func (m *sidebar) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setTab(tabSessions)
 			m.selPane = msg.shown
 		}
-		m.sessions, m.shown = msg.sessions, msg.shown
+		m.sessions, m.shown, m.remotesDown = msg.sessions, msg.shown, msg.down
 		m.fixSelection()
 		return m, nil
 	case opMsg:
@@ -505,6 +548,9 @@ func (m *sidebar) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.pendingA = ""
+		if isRemoteID(s.ID) {
+			return m, m.remoteAct(s, "archive", force)
+		}
 		st := m.st
 		return m, func() tea.Msg {
 			if err := archive(st, s, force); err != nil {
@@ -521,6 +567,10 @@ func (m *sidebar) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.flash("archive it first (a)", true)
 			return m, nil
 		}
+		if isRemoteID(s.ID) {
+			m.flash("a remote session — forget it on "+s.Profile, true)
+			return m, nil
+		}
 		st := m.st
 		return m, func() tea.Msg {
 			err := st.Tx(func(tx *store.Tx) error { return tx.Delete(s.ID) })
@@ -528,12 +578,14 @@ func (m *sidebar) key(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case strings.ToLower(tmux.NewSessionKey): // F10 comes from ⌘⇧N
 		dir := config.Expand("~")
-		if s, ok := m.selected(); ok && s.Cwd != "" {
+		if s, ok := m.selected(); ok && s.Cwd != "" && !isRemoteID(s.ID) {
 			dir = s.Cwd
 		}
 		m.startInput(modeNew, collapseHome(dir))
 	case "e":
-		if s, ok := m.selected(); ok {
+		if s, ok := m.selected(); ok && isRemoteID(s.ID) {
+			m.flash("a remote session — rename it on "+s.Profile, true)
+		} else if ok {
 			m.startInput(modeRename, s.Name)
 		}
 	case "c": // same as ⌘⇧G
@@ -639,6 +691,9 @@ func (m *sidebar) open(focus bool) tea.Cmd {
 		m.flash("not inside `harness ui` — use harness attach", true)
 		return nil
 	}
+	if isRemoteID(s.ID) {
+		return m.openRemote(s, focus)
+	}
 	cfg, st, self, width := m.cfg, m.st, m.self, m.cfg.SidebarWidth
 	names := m.paneNames()
 	return func() tea.Msg {
@@ -656,6 +711,57 @@ func (m *sidebar) open(focus bool) tea.Cmd {
 		err := tmux.Show(self, pane, width, func(p string) string { return names[p] }, focus)
 		return opMsg{text: text, err: err, selectPane: pane}
 	}
+}
+
+// openRemote shows a remote session next to the sidebar: a pane of this
+// tmux running `harness remote-attach`, which mirrors the session's pane on
+// its host and types into it. A stopped one is resumed there first.
+func (m *sidebar) openRemote(s store.Session, focus bool) tea.Cmd {
+	cfg, self, width := m.cfg, m.self, m.cfg.SidebarWidth
+	names := m.paneNames()
+	return func() tea.Msg {
+		text := ""
+		if !s.Live() {
+			if err := remoteCall(cfg, s.ID, "resume", false); err != nil {
+				return opMsg{err: err}
+			}
+			text = "resumed " + label(s) + " on " + s.Profile
+		}
+		pane, err := ensureRemotePane(cfg, s.ID, windowName(s))
+		if err != nil {
+			return opMsg{err: err}
+		}
+		err = tmux.Show(self, pane, width, func(p string) string { return names[p] }, focus)
+		return opMsg{text: text, err: err, selectPane: pane}
+	}
+}
+
+// remoteAct runs an action (archive, resume) on a remote session's host.
+func (m *sidebar) remoteAct(s store.Session, what string, force bool) tea.Cmd {
+	cfg := m.cfg
+	return func() tea.Msg {
+		if err := remoteCall(cfg, s.ID, what, force); err != nil {
+			return opMsg{err: err}
+		}
+		return opMsg{text: what + "d " + label(s) + " on " + s.Profile}
+	}
+}
+
+// remoteCall posts a per-session action to the host of a remote id.
+func remoteCall(cfg *config.Config, id, what string, force bool) error {
+	host, rid, _ := splitRemoteID(id)
+	c, err := remoteClientFor(cfg, host)
+	if err != nil {
+		return err
+	}
+	path := sessionPath(rid, what)
+	if force {
+		path += "?force=1"
+	}
+	if err := c.call(http.MethodPost, path, nil, nil); err != nil {
+		return fmt.Errorf("%s: %w", host, err)
+	}
+	return nil
 }
 
 // moveHere takes a terminal-tab session over (see moveSession) and shows it.
@@ -1058,6 +1164,16 @@ func (m *sidebar) body() ([]string, []string) {
 			l1, l2 := m.renderSession(s, w)
 			add(l1, s.ID)
 			add(l2, s.ID)
+		}
+	}
+	if m.tab == tabSessions {
+		// A remote host that does not answer keeps its place in the list.
+		for _, v := range m.remotesDown {
+			if len(lines) > 0 {
+				add("", "")
+			}
+			add(profileStyle(v.Name).Render("  "+v.Name)+stSub.Render(" remote"), "")
+			add(stMuted.Render(ansi.Truncate("    unreachable: "+v.Err, w, "…")), "")
 		}
 	}
 	if len(lines) == 0 {
