@@ -255,6 +255,28 @@ func paneWith(opt string) string {
 	return ""
 }
 
+const remoteOpt = "@harness_remote"
+
+// MarkRemote records that pane mirrors the remote session id.
+func MarkRemote(pane, id string) {
+	run("set-option", "-p", "-t", pane, remoteOpt, id)
+}
+
+// RemotePanes maps remote session ids to the live pane mirroring each.
+func RemotePanes() map[string]string {
+	panes := map[string]string{}
+	out, err := run("list-panes", "-a", "-F", "#{pane_id} #{pane_dead} #{"+remoteOpt+"}")
+	if err != nil {
+		return panes
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if f := strings.Fields(line); len(f) == 3 && f[1] == "0" {
+			panes[f[2]] = f[0]
+		}
+	}
+	return panes
+}
+
 // EnsureSidebar starts the sidebar (command) in window "main" unless it
 // runs, restarts it in place when it runs an older build than build, and
 // (re)applies the key bindings either way; exe is the harness binary the

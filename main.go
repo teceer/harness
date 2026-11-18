@@ -26,6 +26,8 @@ const usage = `harness — Claude Code session control
   harness changes [toggle]           git changes pane (⌘⇧G opens / closes it)
   harness preview <id>               print a session's recent conversation
   harness attach <id>                focus a session's tmux pane
+  harness remote-attach <remote:id>  mirror a remote host's session here and
+                                     type into it (ctrl+] leaves)
   harness move [-d] <id>             take over a session from a terminal tab
   harness archive [-f] <id>...       stop the process, keep it resumable
   harness resume [-d] <id>           restart an archived/ended session
@@ -36,7 +38,8 @@ const usage = `harness — Claude Code session control
                                      register hooks in Claude settings.json
   harness hook                       (called by Claude Code hooks)
 
-<id> is a session id or any unique prefix of it.
+<id> is a session id or any unique prefix of it. Sessions of a remote host
+([remotes.<name>] in config.toml) are <name>:<id>.
 `
 
 func main() {
@@ -71,6 +74,8 @@ func main() {
 		err = cmdList(args)
 	case "new":
 		err = cmdNew(args)
+	case "remote-attach":
+		err = cmdRemoteAttach(args)
 	case "attach", "a":
 		err = cmdAttach(args)
 	case "move":

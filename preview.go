@@ -39,12 +39,12 @@ func cmdPreview(args []string) error {
 	}
 	return withStore(func(cfg *config.Config, st *store.Store) error {
 		if !*hold {
-			s, err := st.Find(fs.Arg(0))
-			if err != nil {
+			s, msgs, err := previewSession(cfg, st, fs.Arg(0))
+			if s.ID == "" {
 				return err
 			}
 			w, h := termSize()
-			fmt.Println(renderPreview(s, w, h, false, ""))
+			fmt.Println(renderConversation(s, msgs, err, w, h, false, ""))
 			return nil
 		}
 		lipgloss.SetColorProfile(termenv.TrueColor) // inside the harness tmux
@@ -60,15 +60,15 @@ func cmdPreview(args []string) error {
 			}
 		}
 		draw := func() {
-			s, err := st.Find(ids[at])
+			s, msgs, err := previewSession(cfg, st, ids[at])
 			w, h := termSize()
 			page := stErr.Render(fmt.Sprint(err))
-			if err == nil {
+			if s.ID != "" {
 				pos := ""
 				if len(ids) > 1 {
 					pos = fmt.Sprintf("%d/%d", at+1, len(ids))
 				}
-				page = renderPreview(s, w, h, true, pos)
+				page = renderConversation(s, msgs, err, w, h, true, pos)
 			}
 			fmt.Print("\x1b[H\x1b[2J" + page)
 		}
@@ -101,9 +101,36 @@ func termSize() (int, int) {
 // previewMessages bounds how much of the transcript a peek reads.
 const previewMessages = 40
 
-// renderPreview lays out a header and the newest messages that fit, bottom
-// aligned like a chat.
-func renderPreview(s store.Session, w, h int, hold bool, pos string) string {
+// errNoTranscript: the session has nothing to show yet.
+var errNoTranscript = errors.New("no transcript — the session never exchanged a message")
+
+// previewSession resolves id to a session and its recent messages: a local
+// one from its transcript, a remote one ("<host>:<id>") through its host's
+// API. A zero session means it was not found; otherwise err only explains
+// why there are no messages.
+func previewSession(cfg *config.Config, st *store.Store, id string) (store.Session, []transcript.Message, error) {
+	if isRemoteID(id) {
+		c, ws, err := findRemote(cfg, id)
+		if err != nil {
+			return store.Session{}, nil, err
+		}
+		msgs, err := c.messages(ws.ID)
+		return remoteSession(c.name, ws, time.Now()), msgs, err
+	}
+	s, err := st.Find(id)
+	if err != nil {
+		return store.Session{}, nil, err
+	}
+	msgs, err := transcript.Tail(s.TranscriptPath, previewMessages)
+	if s.TranscriptPath == "" || errors.Is(err, os.ErrNotExist) {
+		err = errNoTranscript
+	}
+	return s, msgs, err
+}
+
+// renderConversation lays out a header and the newest messages that fit,
+// bottom aligned like a chat; err stands in for the messages when set.
+func renderConversation(s store.Session, msgs []transcript.Message, err error, w, h int, hold bool, pos string) string {
 	w = max(w, 20)
 	title := stTitle.Render(ansi.Truncate(label(s), w-len(pos)-1, "…"))
 	if pos != "" {
@@ -121,10 +148,9 @@ func renderPreview(s store.Session, w, h int, hold bool, pos string) string {
 	}
 
 	var body []string
-	msgs, err := transcript.Tail(s.TranscriptPath, previewMessages)
 	switch {
-	case s.TranscriptPath == "" || errors.Is(err, os.ErrNotExist):
-		body = []string{stSub.Render("no transcript — the session never exchanged a message")}
+	case errors.Is(err, errNoTranscript):
+		body = []string{stSub.Render(err.Error())}
 	case err != nil:
 		body = []string{stErr.Render(err.Error())}
 	case len(msgs) == 0:

@@ -194,6 +194,9 @@ func cmdAttach(args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: harness attach <id>")
 	}
+	if isRemoteID(args[0]) { // a remote host's session: mirror it here
+		return cmdRemoteAttach(args)
+	}
 	return withStore(func(cfg *config.Config, st *store.Store) error {
 		s, err := st.Find(args[0])
 		if err != nil {

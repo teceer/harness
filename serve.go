@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"embed"
@@ -55,7 +56,8 @@ func cmdServe(args []string) error {
 		if err != nil {
 			return err
 		}
-		srv := &webServer{cfg: cfg, st: st, token: token}
+		srv := &webServer{cfg: cfg, st: st, token: token, hub: newRemoteHub(cfg)}
+		srv.hub.start(context.Background())
 		mux := http.NewServeMux()
 		srv.routes(mux)
 
@@ -138,6 +140,7 @@ type webServer struct {
 	cfg   *config.Config
 	st    *store.Store
 	token string
+	hub   *remoteHub // sessions of the remote hosts; nil without any
 
 	pushOnce gosync.Once
 	push     *pushTokens
@@ -178,20 +181,21 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/system", s.auth(s.system))
 	mux.Handle("GET /api/state", s.auth(s.state))
 	mux.Handle("GET /api/events", s.auth(s.events))
-	mux.Handle("GET /api/sessions/{id}/messages", s.auth(s.messages))
-	mux.Handle("GET /api/sessions/{id}/stream", s.auth(s.messageStream))
-	mux.Handle("GET /api/sessions/{id}/pane", s.auth(s.paneStream))
-	mux.Handle("GET /api/sessions/{id}/scrollback", s.auth(s.scrollback))
-	mux.Handle("POST /api/sessions/{id}/scroll", s.auth(s.scroll))
-	mux.Handle("POST /api/sessions/{id}/upload", s.auth(s.upload))
-	mux.Handle("POST /api/sessions/{id}/send", s.auth(s.send))
-	mux.Handle("POST /api/sessions/{id}/keys", s.auth(s.liveKeys))
-	mux.Handle("POST /api/sessions/{id}/archive", s.auth(s.archiveSession))
-	mux.Handle("POST /api/sessions/{id}/resume", s.auth(s.resume))
+	// Per-session calls go through sess: a remote id is passed on to its host.
+	mux.Handle("GET /api/sessions/{id}/messages", s.sess(s.messages))
+	mux.Handle("GET /api/sessions/{id}/stream", s.sess(s.messageStream))
+	mux.Handle("GET /api/sessions/{id}/pane", s.sess(s.paneStream))
+	mux.Handle("GET /api/sessions/{id}/scrollback", s.sess(s.scrollback))
+	mux.Handle("POST /api/sessions/{id}/scroll", s.sess(s.scroll))
+	mux.Handle("POST /api/sessions/{id}/upload", s.sess(s.upload))
+	mux.Handle("POST /api/sessions/{id}/send", s.sess(s.send))
+	mux.Handle("POST /api/sessions/{id}/keys", s.sess(s.liveKeys))
+	mux.Handle("POST /api/sessions/{id}/archive", s.sess(s.archiveSession))
+	mux.Handle("POST /api/sessions/{id}/resume", s.sess(s.resume))
 	mux.Handle("POST /api/sessions/{id}/focus", s.auth(s.focus))
 	mux.Handle("POST /api/new", s.auth(s.newSession))
-	mux.Handle("POST /api/sessions/{id}/read", s.auth(s.markRead(false)))
-	mux.Handle("POST /api/sessions/{id}/unread", s.auth(s.markRead(true)))
+	mux.Handle("POST /api/sessions/{id}/read", s.sess(s.markRead(false)))
+	mux.Handle("POST /api/sessions/{id}/unread", s.sess(s.markRead(true)))
 	mux.Handle("POST /api/push/register", s.auth(s.pushRegister))
 	mux.Handle("POST /api/push/unregister", s.auth(s.pushUnregister))
 }
@@ -242,6 +246,10 @@ type webSession struct {
 	Unread    bool   `json:"unread"`        // news since you last opened it (see read.go)
 	Say       string `json:"say,omitempty"` // one plain sentence for the 8-bit board (sayFor)
 	PR        int    `json:"pr,omitempty"`  // pull request number from the name or last message
+	// Host names the remote a session runs on ("" for this machine); its
+	// id is then "<host>:<id there>" and its profile is the host's name.
+	Host  string `json:"host,omitempty"`
+	Since int64  `json:"since,omitempty"` // unix time the status began (what age counts from)
 }
 
 type webState struct {
@@ -249,6 +257,14 @@ type webState struct {
 	Dirs     []string     `json:"dirs"`     // known project directories, for a new session
 	Profiles []webProfile `json:"profiles"` // display order, "other" last
 	Unread   int          `json:"unread"`   // live sessions with news, for the icon badge
+	Remotes  []webRemote  `json:"remotes,omitempty"`
+}
+
+// webRemote is a configured remote host and whether it answers.
+type webRemote struct {
+	Name  string `json:"name"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 type webProfile struct {
@@ -266,6 +282,10 @@ func (s *webServer) profiles() []webProfile {
 			p.Roots = append(p.Roots, collapseHome(r))
 		}
 		out = append(out, p)
+	}
+	// A remote is a group of its own, named like the host.
+	for _, c := range s.hubClients() {
+		out = append(out, webProfile{Name: c.name, Roots: []string{}})
 	}
 	return append(out, webProfile{Name: "other", Roots: []string{}})
 }
@@ -308,6 +328,7 @@ func (s *webServer) snapshot() (webState, error) {
 					Resumable: !x.Live() && hasTranscript(x),
 					Unread:    rs.unread(x),
 					Say:       sayFor(x), PR: prNumber(x),
+					Since: x.StatusSince.Unix(),
 				})
 				if x.Live() && rs.unread(x) {
 					out.Unread++
@@ -321,6 +342,7 @@ func (s *webServer) snapshot() (webState, error) {
 			}
 		}
 	}
+	s.addRemotes(&out)
 	return out, nil
 }
 
@@ -350,7 +372,7 @@ func (s *webServer) events(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-time.After(300 * time.Millisecond):
 		}
-		stamp := stateStamp(s.cfg.Home)
+		stamp := stateStamp(s.cfg.Home) + s.hub.stamp()
 		if stamp == last && time.Since(lastSend) < 5*time.Second {
 			continue
 		}
@@ -588,6 +610,10 @@ func (s *webServer) archiveSession(w http.ResponseWriter, r *http.Request) {
 // focus switches the harness terminal to the session's pane, as ⌘[ ⌘] do:
 // the board's click on a character on a desktop lands here.
 func (s *webServer) focus(w http.ResponseWriter, r *http.Request) {
+	if isRemoteID(r.PathValue("id")) {
+		s.focusRemote(w, r)
+		return
+	}
 	se, err := s.st.Find(r.PathValue("id"))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -626,10 +652,15 @@ func (s *webServer) resume(w http.ResponseWriter, r *http.Request) {
 
 func (s *webServer) newSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Dir string `json:"dir"`
+		Dir  string `json:"dir"`
+		Host string `json:"host"` // a remote to start it on; "" is this machine
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if body.Host != "" {
+		s.newRemoteSession(w, r, body.Host, body.Dir)
 		return
 	}
 	dir := resolveDir(body.Dir)
