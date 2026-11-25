@@ -56,7 +56,7 @@ func cmdServe(args []string) error {
 		if err != nil {
 			return err
 		}
-		srv := &webServer{cfg: cfg, st: st, token: token, hub: newRemoteHub(cfg)}
+		srv := &webServer{cfg: cfg, st: st, token: token, hub: newRemoteHub(cfg), huddles: newHuddleManager(cfg, st)}
 		srv.hub.start(context.Background())
 		mux := http.NewServeMux()
 		srv.routes(mux)
@@ -142,6 +142,8 @@ type webServer struct {
 	token string
 	hub   *remoteHub // sessions of the remote hosts; nil without any
 
+	huddles *huddleManager // voice calls; nil outside serve
+
 	pushOnce gosync.Once
 	push     *pushTokens
 
@@ -196,6 +198,9 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/new", s.auth(s.newSession))
 	mux.Handle("POST /api/sessions/{id}/read", s.sess(s.markRead(false)))
 	mux.Handle("POST /api/sessions/{id}/unread", s.sess(s.markRead(true)))
+	if s.huddles != nil {
+		s.huddleRoutes(mux)
+	}
 	mux.Handle("POST /api/push/register", s.auth(s.pushRegister))
 	mux.Handle("POST /api/push/unregister", s.auth(s.pushUnregister))
 }
