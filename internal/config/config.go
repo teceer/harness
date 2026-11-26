@@ -74,8 +74,30 @@ type Config struct {
 	Profiles map[string]Profile `toml:"profiles"`
 	// Remotes are other machines running `harness serve`, by name.
 	Remotes map[string]Remote `toml:"remotes"`
+	// Huddle is the voice call between an agent and the phone.
+	Huddle Huddle `toml:"huddle"`
 
 	Home string `toml:"-"`
+}
+
+// Huddle configures voice calls: the agent rings the phone (CallKit over an
+// APNs VoIP push) or the user calls a session, and a realtime voice model
+// talks on the agent's behalf.
+type Huddle struct {
+	// GeminiKeyFile holds the Gemini API key (default ~/.harness/gemini-key;
+	// $GEMINI_API_KEY is used when the file is missing).
+	GeminiKeyFile string `toml:"gemini_key_file"`
+	Model         string `toml:"model"` // default gemini-3.8-live
+	Voice         string `toml:"voice"` // prebuilt voice, default Puck
+	// APNs token auth (.p8) for the VoIP pushes that ring the phone.
+	APNsKey    string `toml:"apns_key"`
+	APNsKeyID  string `toml:"apns_key_id"`
+	APNsTeamID string `toml:"apns_team_id"`
+	// QuietHours ("22:00-08:00") and MaxPerHour keep agents from calling
+	// at night or too often; calls from the user are always allowed.
+	QuietHours  string `toml:"quiet_hours"`
+	MaxPerHour  int    `toml:"max_per_hour"`
+	RingSeconds int    `toml:"ring_seconds"`
 }
 
 const defaultConfig = `# harness configuration
@@ -107,6 +129,14 @@ roots = ["~/code"]
 # [remotes.box]
 # url = "https://box.your-tailnet.ts.net"
 # token = "..."                             # default: the local ~/.harness/web-token
+
+# Voice calls (huddle): agents ring the harness app, you can call a session.
+# [huddle]
+# apns_key = "~/.harness/AuthKey_XXXXXXXXXX.p8"   # APNs auth key (VoIP push)
+# apns_key_id = "XXXXXXXXXX"
+# apns_team_id = "XXXXXXXXXX"
+# quiet_hours = "22:00-08:00"                     # agents do not call then
+# max_per_hour = 3
 `
 
 // HarnessHome is where config, state and logs live (HARNESS_HOME overrides).
@@ -174,6 +204,26 @@ func Load(create bool) (*Config, error) {
 	}
 	if c.IdleArchive == "" {
 		c.IdleArchive = "45m"
+	}
+	h := &c.Huddle
+	if h.GeminiKeyFile == "" {
+		h.GeminiKeyFile = filepath.Join(home, "gemini-key")
+	}
+	h.GeminiKeyFile = Expand(h.GeminiKeyFile)
+	if h.APNsKey != "" {
+		h.APNsKey = Expand(h.APNsKey)
+	}
+	if h.Model == "" {
+		h.Model = "gemini-3.8-live"
+	}
+	if h.Voice == "" {
+		h.Voice = "Puck"
+	}
+	if h.MaxPerHour == 0 {
+		h.MaxPerHour = 3
+	}
+	if h.RingSeconds <= 0 {
+		h.RingSeconds = 45
 	}
 	for name, p := range c.Profiles {
 		p.Name = name

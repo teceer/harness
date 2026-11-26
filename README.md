@@ -322,3 +322,38 @@ MIT — see [LICENSE](LICENSE).
   it just closes it.
 - Moving a terminal-tab session into harness (`⏎` → `y`, or
   `harness move <id>`) needs it idle; its tab is left at the shell prompt.
+
+## Huddle: voice calls with agents
+
+An agent can ring the Harness app like a Slack huddle, and you can call a
+session from the app. A realtime voice model (Gemini Live) talks on the
+agent's behalf, using the agent's brief or the session's recent
+conversation; questions it cannot answer go to the agent, and the decisions
+go back to it when the call ends.
+
+```
+agent ── MCP huddle_call ──► harness serve ── APNs VoIP push ──► iPhone (CallKit)
+                                   ▲  ▲                              │
+                    …/next, answer │  └── WebSocket: PCM audio ◄─────┘
+                                   └──── Gemini Live (voice, tools)
+```
+
+Setup:
+
+```sh
+claude mcp add --scope user harness -- ~/bin/harness mcp
+printf %s "$GEMINI_API_KEY" > ~/.harness/gemini-key && chmod 600 ~/.harness/gemini-key
+```
+
+and in `config.toml`:
+
+```toml
+[huddle]
+apns_key = "~/.harness/AuthKey_XXXXXXXXXX.p8"   # APNs auth key, token based
+apns_key_id = "XXXXXXXXXX"
+apns_team_id = "XXXXXXXXXX"
+quiet_hours = "22:00-08:00"                     # agents do not call then
+max_per_hour = 3
+```
+
+Transcripts are kept in `~/.harness/huddles/`.

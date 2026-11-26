@@ -23,6 +23,8 @@ const usage = `harness — Claude Code session control
   harness serve [--port 7777]        remote control over Tailscale
   harness notify [-t title] [-s id] message
                                      push to the harness app (agents' updates)
+  harness mcp                        MCP server for agents: huddle_call rings
+                                     the phone for a voice call (stdio)
   harness changes [toggle]           git changes pane (⌘⇧G opens / closes it)
   harness preview <id>               print a session's recent conversation
   harness attach <id>                focus a session's tmux pane
@@ -64,6 +66,8 @@ func main() {
 		err = cmdServe(args)
 	case "notify":
 		err = cmdNotify(args)
+	case "mcp":
+		err = cmdMCP(args)
 	case "changes":
 		err = cmdChanges(args)
 	case "diff":
