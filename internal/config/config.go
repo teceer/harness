@@ -5,8 +5,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -28,6 +30,34 @@ func (p Profile) ConfigDir() string {
 	return DefaultClaudeDir()
 }
 
+// Remote is another machine running `harness serve`; its sessions are
+// listed next to the local ones and driven through its API.
+type Remote struct {
+	Name string `toml:"-"`
+	// URL is how its `harness serve` is reached, e.g. https://box.tailnet.ts.net.
+	URL string `toml:"url"`
+	// Token is its web-token; empty means it shares the local one.
+	Token string `toml:"token"`
+}
+
+// remoteNameRe keeps remote names usable inside session ids ("name:id"),
+// URLs and tmux window names.
+var remoteNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// Validate reports a remote that cannot be used. Load keeps such entries
+// (a typo must not break hooks or local commands); callers show the error
+// where the remote's sessions would be.
+func (r Remote) Validate() error {
+	if !remoteNameRe.MatchString(r.Name) {
+		return fmt.Errorf("remote name %q: use letters, digits, '.', '_' and '-'", r.Name)
+	}
+	u, err := url.Parse(r.URL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("remote %s: url must be http(s)://host[:port], got %q", r.Name, r.URL)
+	}
+	return nil
+}
+
 type Config struct {
 	// Claude is the claude binary; resolved from PATH when empty.
 	Claude       string `toml:"claude"`
@@ -42,6 +72,8 @@ type Config struct {
 	// WebURL is how `harness serve` is reached, for links in notifications.
 	WebURL   string             `toml:"web_url"`
 	Profiles map[string]Profile `toml:"profiles"`
+	// Remotes are other machines running `harness serve`, by name.
+	Remotes map[string]Remote `toml:"remotes"`
 
 	Home string `toml:"-"`
 }
@@ -70,6 +102,11 @@ roots = ["~/code"]
 # [profiles.work]
 # roots = ["~/work"]
 # env = { CLAUDE_CONFIG_DIR = "~/.claude-work" }
+
+# Another machine running 'harness serve': its sessions are listed here too.
+# [remotes.box]
+# url = "https://box.your-tailnet.ts.net"
+# token = "..."                             # default: the local ~/.harness/web-token
 `
 
 // HarnessHome is where config, state and logs live (HARNESS_HOME overrides).
@@ -153,6 +190,12 @@ func Load(create bool) (*Config, error) {
 		p.Env = env
 		c.Profiles[name] = p
 	}
+	for name, r := range c.Remotes {
+		r.Name = name
+		r.URL = strings.TrimRight(strings.TrimSpace(r.URL), "/")
+		r.Token = strings.TrimSpace(r.Token)
+		c.Remotes[name] = r
+	}
 	return &c, nil
 }
 
@@ -209,4 +252,27 @@ func (c *Config) ClaudeDirs() []string {
 		}
 	}
 	return dirs
+}
+
+// RemoteNames lists the configured remotes in display order.
+func (c *Config) RemoteNames() []string {
+	names := make([]string, 0, len(c.Remotes))
+	for n := range c.Remotes {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// RemoteToken is the token r's API expects: its own, or the local web-token
+// (the same file copied to both machines).
+func (c *Config) RemoteToken(r Remote) (string, error) {
+	if r.Token != "" {
+		return r.Token, nil
+	}
+	b, err := os.ReadFile(filepath.Join(c.Home, "web-token"))
+	if t := strings.TrimSpace(string(b)); err == nil && t != "" {
+		return t, nil
+	}
+	return "", fmt.Errorf("remote %s: no token (set token, or copy its web-token to %s)", r.Name, filepath.Join(c.Home, "web-token"))
 }

@@ -31,9 +31,15 @@ const endedVisible = 24 * time.Hour
 // archivable) and those living in plain terminal tabs; the Archived tab
 // holds everything stopped and resumable.
 func sections(all []store.Session, t tab, showEnded bool, now time.Time) []section {
-	var a, b []store.Session
+	var a, b, remote []store.Session
 	for _, s := range all {
 		switch {
+		case t == tabSessions && isRemoteID(s.ID):
+			// Sessions of a remote host: a mirror pane here does not make
+			// them local, and ⌘[ ⌘] keep to this machine's sessions.
+			if s.Live() {
+				remote = append(remote, s)
+			}
 		case t == tabSessions && s.Live() && s.TmuxPane != "":
 			a = append(a, s)
 		case t == tabSessions && s.Live():
@@ -47,7 +53,8 @@ func sections(all []store.Session, t tab, showEnded bool, now time.Time) []secti
 	if t == tabSessions {
 		byProfile(a)
 		byProfile(b)
-		return []section{{"active", a}, {"outside harness", b}}
+		byProfile(remote)
+		return []section{{"active", a}, {"outside harness", b}, {"remote", remote}}
 	}
 	byProfile(a)
 	byProfile(b)

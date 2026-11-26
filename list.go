@@ -29,6 +29,9 @@ type sessionJSON struct {
 	PID         int       `json:"pid,omitempty"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	StatusSince time.Time `json:"status_since"`
+	// Host is the remote a session runs on; its id is "<host>:<id there>"
+	// and its profile the host's name.
+	Host string `json:"host,omitempty"`
 }
 
 // recentEnded keeps finished sessions visible for a while without -a.
@@ -54,17 +57,35 @@ func cmdList(args []string) error {
 				shown = append(shown, s)
 			}
 		}
+		// Remote hosts answer within remoteQuick or are reported unreachable;
+		// either way the local list above is complete.
+		remotes := fetchRemotes(remoteClients(cfg), remoteQuick)
 		if *asJSON {
 			out := make([]sessionJSON, 0, len(shown))
 			for _, s := range shown {
 				out = append(out, sessionJSON{s.ID, s.Profile, s.Status, s.Detail, display(s), s.Cwd,
-					s.ConfigDir, s.LastPrompt, s.LastMessage, s.TmuxPane, s.PID, s.UpdatedAt, s.StatusSince})
+					s.ConfigDir, s.LastPrompt, s.LastMessage, s.TmuxPane, s.PID, s.UpdatedAt, s.StatusSince, ""})
+			}
+			for _, v := range remotes {
+				if v.Err != "" {
+					fmt.Fprintf(os.Stderr, "harness: %s unreachable: %s\n", v.Name, v.Err)
+				}
+			}
+			for _, s := range remoteSessions(remotes) {
+				if *all || s.Status != store.Ended || time.Since(s.UpdatedAt) < recentEnded {
+					out = append(out, sessionJSON{ID: s.ID, Profile: s.Profile, Status: s.Status, Detail: s.Detail,
+						Title: display(s), Cwd: s.Cwd, LastMessage: s.LastMessage,
+						UpdatedAt: s.UpdatedAt, StatusSince: s.StatusSince, Host: s.Profile})
+				}
 			}
 			enc := json.NewEncoder(os.Stdout)
 			enc.SetIndent("", "  ")
 			return enc.Encode(out)
 		}
-		printGrouped(cfg, shown)
+		if len(shown) > 0 || len(remotes) == 0 {
+			printGrouped(cfg, shown)
+		}
+		printRemotes(remotes, *all)
 		return nil
 	})
 }
@@ -105,6 +126,36 @@ func printGrouped(cfg *config.Config, sessions []store.Session) {
 			if snip := snippet(s); snip != "" {
 				fmt.Printf("\033[2m%s\033[0m\n", truncate("      "+snip, width))
 			}
+		}
+	}
+}
+
+// printRemotes lists each remote host as a group of its own, after the
+// local profiles; a host that did not answer is one line saying so.
+func printRemotes(views []remoteView, all bool) {
+	width := termWidth()
+	for _, v := range views {
+		if v.Err != "" {
+			fmt.Println(truncate(fmt.Sprintf("\033[1m▾ %s\033[0m \033[2m(remote)\033[0m \033[31munreachable\033[0m\033[2m: %s\033[0m", v.Name, v.Err), width))
+			continue
+		}
+		fmt.Printf("\033[1m▾ %s\033[0m \033[2m(remote)\033[0m\n", v.Name)
+		ss := remoteSessions([]remoteView{v})
+		sort.SliceStable(ss, func(i, j int) bool { return statusOrder[ss[i].Status] < statusOrder[ss[j].Status] })
+		shown := 0
+		for _, s := range ss {
+			if !all && s.Status == store.Ended && time.Since(s.UpdatedAt) >= recentEnded {
+				continue
+			}
+			shown++
+			head := fmt.Sprintf("  %s %s %-9s %5s  %s", icon(s.Status), shortRemote(s.ID), statusLabel(s), ago(s.StatusSince), display(s))
+			fmt.Println(truncate(head, width))
+			if snip := snippet(s); snip != "" {
+				fmt.Printf("\033[2m%s\033[0m\n", truncate("      "+snip, width))
+			}
+		}
+		if shown == 0 {
+			fmt.Println("\033[2m  no sessions\033[0m")
 		}
 	}
 }
