@@ -428,7 +428,7 @@ func TestSystemPromptKeepsPolishAndDelegates(t *testing.T) {
 	m := &huddleManager{}
 	for _, origin := range []string{originAgent, originUser} {
 		p := m.systemPrompt(&huddle{Origin: origin, Caller: "s", Topic: "t"})
-		for _, want := range []string{"wyłącznie po polsku", "nie pytaj o zmianę języka", "nigdy nie mów, że agent czegoś nie może", "po wyraźnym potwierdzeniu", "nie zapisuj jej słów jako decyzji"} {
+		for _, want := range []string{"wyłącznie po polsku", "nie pytaj o zmianę języka", "nigdy nie mów, że agent czegoś nie może", "po wyraźnym potwierdzeniu", "nie zapisuj jej słów jako decyzji", "Obiecujesz tylko to, co przekazujesz dalej", "Potem czekaj na odpowiedź", "powtarza dokładnie to, co zapisałeś"} {
 			if !strings.Contains(p, want) {
 				t.Errorf("%s prompt lacks %q", origin, want)
 			}

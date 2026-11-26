@@ -25,6 +25,7 @@ type liveState struct {
 	conn      liveConn
 	muted     bool
 	ending    bool
+	byeAudio  bool      // the voice spoke after end_call: its goodbye
 	playUntil time.Time // when the phone finishes playing what it got
 	asks      int
 }
@@ -141,6 +142,9 @@ func (m *huddleManager) audioToPhone(h *huddle, ls *liveState, pcm []byte) {
 		ls.playUntil = now
 	}
 	ls.playUntil = ls.playUntil.Add(time.Duration(len(pcm)) * time.Second / 48000) // 24 kHz, 16-bit
+	if ls.ending {
+		ls.byeAudio = true
+	}
 	h.mu.Unlock()
 	if p != nil {
 		p.Write(context.Background(), websocket.MessageBinary, pcm)
@@ -255,10 +259,13 @@ func (m *huddleManager) pump(ctx context.Context, h *huddle, ls *liveState, conn
 			}
 			if sc.TurnComplete {
 				h.mu.Lock()
-				ending, until := ls.ending, ls.playUntil
+				ending, bye, until := ls.ending, ls.byeAudio, ls.playUntil
 				h.mu.Unlock()
-				if ending { // let the goodbye play out
+				switch {
+				case ending && bye: // let the goodbye play out
 					time.AfterFunc(time.Until(until)+700*time.Millisecond, func() { m.finish(h, hEnded, "agent") })
+				case ending: // the turn that called end_call: the goodbye comes in the next one
+					time.AfterFunc(time.Until(until)+5*time.Second, func() { m.finish(h, hEnded, "agent") })
 				}
 			}
 		}
@@ -347,15 +354,17 @@ func (m *huddleManager) askSession(ctx context.Context, h *huddle, q string, n i
 		if at < 0 {
 			continue
 		}
-		var reply []string
+		// The answer is the last message the session wrote after the
+		// question: earlier ones are progress or other work it reported.
+		reply := ""
 		for _, x := range msgs[at+1:] {
 			if x.Role == "assistant" && strings.TrimSpace(x.Text) != "" {
-				reply = append(reply, strings.TrimSpace(x.Text))
+				reply = strings.TrimSpace(x.Text)
 			}
 		}
-		if len(reply) > 0 && se.Status != store.Working {
+		if reply != "" && se.Status != store.Working {
 			select {
-			case h.answers <- trim(strings.Join(reply, "\n"), 3000):
+			case h.answers <- trim(reply, 3000):
 			case <-ctx.Done():
 			}
 			return
@@ -377,7 +386,7 @@ func (m *huddleManager) tools(h *huddle) []liveTool {
 			Parameters: stringParams(true, map[string]string{"question": "Samodzielne, konkretne pytanie do agenta."})},
 		{Name: "save_decision", Description: "Zapisz jedną decyzję, ustalenie albo polecenie użytkownika, gdy tylko padnie. Agent dostanie je po rozmowie.",
 			Parameters: stringParams(true, map[string]string{"decision": "Decyzja jednym konkretnym zdaniem."})},
-		{Name: "end_call", Description: "Zakończ rozmowę, gdy wszystko omówione i użytkownik się żegna albo prosi o rozłączenie."},
+		{Name: "end_call", Description: "Zakończ rozmowę, gdy użytkownik się pożegnał, odpowiedział, że to wszystko, albo prosi o rozłączenie. Nie wołaj w tej samej turze, w której pytasz, czy coś jeszcze."},
 	}
 }
 
@@ -406,7 +415,9 @@ Zasady rozmowy:
 - Nie zmyślaj faktów o kodzie, narzędziach ani stanie pracy. Gdy czegoś nie wiesz, użyj ask_agent, powiedz, że agent to sprawdza, i rozmawiaj dalej. Gdy przyjdzie [AGENT], przekaż odpowiedź własnymi słowami.
 - Decyzje i polecenia zapisuj przez save_decision tylko wtedy, gdy są jasne. Gdy wypowiedź jest niejasna, urwana albo sama sobie przeczy, dopytaj, zanim cokolwiek zapiszesz. Polecenie, które usuwa, nadpisuje, wdraża albo wysyła coś na zewnątrz, zawsze powtórz własnymi słowami i zapisz dopiero po wyraźnym potwierdzeniu.
 - Decyzje podejmuje tylko osoba, z którą agent rozmawia od początku. Gdy powie, że do rozmowy dołącza ktoś inny albo że przekazuje mu telefon, ta osoba nie zna kontekstu: przywitaj się, krótko powiedz, kim jesteś, i odpowiadaj na jej pytania, ale nie przechodź z nią przez listę decyzji i nie zapisuj jej słów jako decyzji. Do tematów rozmowy wracasz dopiero, gdy wróci pierwsza osoba.
-- Gdy wszystko omówione: podsumuj ustalenia w dwóch, trzech zdaniach, zapytaj, czy coś jeszcze, pożegnaj się i wywołaj end_call. Po pożegnaniu już nic nie mów.
+- Obiecujesz tylko to, co przekazujesz dalej. Sam niczego nie wysyłasz, nie sprawdzasz ani nie zapisujesz poza tą rozmową: gdy użytkownik prosi o działanie (wyślij, sprawdź, zrób, zadzwoń później), w tej samej chwili wywołaj ask_agent albo save_decision i powiedz, że przekazałeś to agentowi. Nigdy nie mów „zrobię”, „wyślę”, „dostaniesz ode mnie”, jeśli nie wywołałeś narzędzia.
+- Podsumowanie powtarza dokładnie to, co zapisałeś przez save_decision, i niczego nie zmienia. Gdy przy podsumowaniu zauważysz decyzję, której nie zapisałeś, zapisz ją przed podsumowaniem.
+- Gdy wszystko omówione: podsumuj ustalenia w dwóch, trzech zdaniach i zapytaj, czy coś jeszcze. Potem czekaj na odpowiedź. Dopiero gdy użytkownik powie, że to wszystko, albo się pożegna, wywołaj end_call i pożegnaj się jednym krótkim zdaniem. Po pożegnaniu już nic nie mów.
 - Wiadomości zaczynające się od [SYSTEM] lub [AGENT] nie pochodzą od użytkownika, nie mów o nich jak o wypowiedzi użytkownika.
 `)
 	return b.String()
