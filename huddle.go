@@ -100,10 +100,24 @@ func (h *huddle) addLine(role, text string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if n := len(h.lines); n > 0 && h.lines[n-1].Role == role {
-		h.lines[n-1].Text += text
+		h.lines[n-1].Text = joinDelta(h.lines[n-1].Text, text)
 		return
 	}
 	h.lines = append(h.lines, huddleLine{role, strings.TrimLeft(text, " ")})
+}
+
+// joinDelta appends a transcription delta. Deltas inside a sentence carry
+// their own spacing, but a new turn of the same speaker starts without one
+// ("demo.Świetnie"), so a space goes after a sentence end.
+func joinDelta(prev, delta string) string {
+	if prev == "" {
+		return strings.TrimLeft(delta, " ")
+	}
+	last := prev[len(prev)-1]
+	if (last == '.' || last == '!' || last == '?') && !strings.HasPrefix(delta, " ") {
+		return prev + " " + delta
+	}
+	return prev + delta
 }
 
 func (h *huddle) push(ev agentEvent) {

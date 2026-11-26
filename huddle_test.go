@@ -409,3 +409,29 @@ func TestMCPToolsList(t *testing.T) {
 		}
 	}
 }
+
+func TestJoinDelta(t *testing.T) {
+	for _, c := range []struct{ prev, delta, want string }{
+		{"", " Cześć", "Cześć"},
+		{"na demo.", "Świetnie", "na demo. Świetnie"},
+		{"Do usłyszenia!", " Do", "Do usłyszenia! Do"},
+		{"przygo", "tuję", "przygotuję"},
+		{"Tak,", " robimy", "Tak, robimy"},
+	} {
+		if got := joinDelta(c.prev, c.delta); got != c.want {
+			t.Errorf("joinDelta(%q, %q) = %q, want %q", c.prev, c.delta, got, c.want)
+		}
+	}
+}
+
+func TestSystemPromptKeepsPolishAndDelegates(t *testing.T) {
+	m := &huddleManager{}
+	for _, origin := range []string{originAgent, originUser} {
+		p := m.systemPrompt(&huddle{Origin: origin, Caller: "s", Topic: "t"})
+		for _, want := range []string{"wyłącznie po polsku", "nie pytaj o zmianę języka", "nigdy nie mów, że agent czegoś nie może", "po wyraźnym potwierdzeniu", "nie zapisuj jej słów jako decyzji"} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s prompt lacks %q", origin, want)
+			}
+		}
+	}
+}

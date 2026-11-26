@@ -110,7 +110,7 @@ func dialLive(ctx context.Context, h config.Huddle, system string, tools []liveT
 		},
 		"systemInstruction":        map[string]any{"parts": []map[string]string{{"text": system}}},
 		"tools":                    []map[string]any{{"functionDeclarations": tools}},
-		"inputAudioTranscription":  map[string]any{},
+		"inputAudioTranscription":  map[string]any{"languageCodes": []string{"pl-PL"}},
 		"outputAudioTranscription": map[string]any{},
 		"contextWindowCompression": map[string]any{"slidingWindow": map[string]any{}},
 		"sessionResumption":        resume,
