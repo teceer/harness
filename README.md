@@ -207,6 +207,18 @@ This is still remote control of a machine that runs Claude Code, often with
 relaxed permissions. Do not put it behind a public tunnel; if you must,
 require an identity check (e.g. ngrok's OAuth), not just the token.
 
+### Design boards
+
+`harness serve` also exposes [diffboard](https://github.com/teceer/diffboard)'s design boards
+under `/diffboard/` (the ◧ button in the header): the canvas where agents propose a data model,
+process and assumptions before writing code, and you accept or reject their proposals from the
+phone. Only the design routes go through; the rest of diffboard (file edits, editors) stays
+local. The page's first visit trades `?t=` for an HttpOnly cookie scoped to `/diffboard/`.
+diffboard must run on the same machine (`diffboard start`; `HARNESS_DIFFBOARD_URL` when it is
+not on `127.0.0.1:4700`). When an agent opens a proposal, diffboard sends
+`harness notify -u /diffboard/design#d=<id>&p=<P1>`: tapping the notification opens it.
+`-u <path>` works for any page of `harness serve`.
+
 Notifications tell you when a session starts waiting for you or finishes a
 turn. `notify_command` runs via `sh` with the text in `$HARNESS_MESSAGE`
 (and `$HARNESS_SESSION`, `$HARNESS_STATUS`), so any channel works:
