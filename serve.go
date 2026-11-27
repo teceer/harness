@@ -203,6 +203,8 @@ func (s *webServer) routes(mux *http.ServeMux) {
 	}
 	mux.Handle("POST /api/push/register", s.auth(s.pushRegister))
 	mux.Handle("POST /api/push/unregister", s.auth(s.pushUnregister))
+	mux.Handle(diffboardPrefix+"/", s.diffboardProxy())
+	mux.Handle(diffboardPrefix, s.diffboardProxy())
 }
 
 // auth: the tailnet already limits who can reach us; the token is the
