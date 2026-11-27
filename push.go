@@ -148,7 +148,7 @@ type expoMessage struct {
 // sendPush delivers a session event to every registered device (errors
 // are only logged: the watcher keeps going).
 func (s *webServer) sendPush(se store.Session, title, body string) {
-	if err := s.deliverPush(se, title, body); err != nil && !errors.Is(err, errNoDevices) {
+	if err := s.deliverPush(se, title, body, ""); err != nil && !errors.Is(err, errNoDevices) {
 		log.Printf("push: %v", err)
 	}
 }
@@ -158,7 +158,11 @@ var errNoDevices = errors.New("no device registered for push")
 // deliverPush sends one notification to every registered device and drops
 // the ones Expo reports as gone (app deleted, push turned off). se may be
 // empty (a message from an agent outside harness): no link then.
-func (s *webServer) deliverPush(se store.Session, title, body string) error {
+//
+// link is an extra page the notification opens instead of the session: a
+// path on this server (e.g. /diffboard/design#d=…), which the app joins
+// with the server it is logged in to.
+func (s *webServer) deliverPush(se store.Session, title, body, link string) error {
 	tokens := s.pushStore().list()
 	if len(tokens) == 0 {
 		return errNoDevices
@@ -171,6 +175,9 @@ func (s *webServer) deliverPush(se store.Session, title, body string) error {
 	thread := "harness"
 	if se.ID != "" {
 		data["sessionId"], thread = se.ID, se.ID
+	}
+	if link != "" {
+		data["url"] = link
 	}
 	badge := s.unreadCount()
 	msgs := make([]expoMessage, len(tokens))

@@ -107,6 +107,7 @@
   <span id="conn" class="pill">…</span>
   <span id="profile" class="pill" hidden></span>
   <span id="status" class="pill" hidden></span>
+  <a id="designBtn" class="icon" href="/diffboard/design" title="design boards: data model, process and assumptions agents propose" style="text-decoration:none;display:inline-grid;place-items:center;color:inherit">◧</a>
   <button id="newBtn" class="icon">+</button>
 </header>
 
@@ -144,6 +145,8 @@
 <script>
 const token = new URLSearchParams(location.search).get('t') || localStorage.getItem('harness-token') || '';
 if (token) localStorage.setItem('harness-token', token);
+// design boards are proxied from diffboard; the first visit swaps the token for a cookie
+document.getElementById('designBtn').href = '/diffboard/design' + (token ? '?t=' + encodeURIComponent(token) : '');
 const $ = id => document.getElementById(id);
 const esc = s => (s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const glyph = {working:'●', waiting:'◆', idle:'○', starting:'◌', archived:'▪', ended:'·'};

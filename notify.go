@@ -16,15 +16,16 @@ import (
 // decisions). Run from a session in the harness tmux, it names that
 // session and tapping the notification opens it.
 //
-//	harness notify [-t title] [-s session] message…
+//	harness notify [-t title] [-s session] [-u /path] message…
 func cmdNotify(args []string) error {
 	fs := flag.NewFlagSet("notify", flag.ExitOnError)
 	title := fs.String("t", "", "title (default: the session's name)")
 	id := fs.String("s", "", "session id or prefix (default: the calling session)")
+	link := fs.String("u", "", "a page on harness serve the notification opens, e.g. /diffboard/design#d=<id>")
 	fs.Parse(args)
 	body := strings.TrimSpace(strings.Join(fs.Args(), " "))
 	if body == "" {
-		return errors.New("usage: harness notify [-t title] [-s session] message")
+		return errors.New("usage: harness notify [-t title] [-s session] [-u /path] message")
 	}
 
 	return withStore(func(cfg *config.Config, st *store.Store) error {
@@ -43,7 +44,10 @@ func cmdNotify(args []string) error {
 			se = store.Session{} // no link: the app opens on the list
 		}
 		se.Status = "" // an update, not a prompt: no answer buttons
-		return srv.deliverPush(se, *title, body)
+		if *link != "" && !strings.HasPrefix(*link, "/") {
+			return errors.New("-u takes a path on harness serve, like /diffboard/design#d=<id>")
+		}
+		return srv.deliverPush(se, *title, body, *link)
 	})
 }
 
